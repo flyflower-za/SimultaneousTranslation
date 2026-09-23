@@ -13,6 +13,8 @@ class ViewerApp {
         // WebSocket 路径为 /ws，角色为 viewer；房间 ID 从 URL 读取（控制端分享的链接）
         const roomParam = new URLSearchParams(window.location.search).get('room') || '';
         this.roomId = roomParam.trim().toUpperCase();
+        this.shareToken = new URLSearchParams(window.location.search).get('share') || '';
+        this.minutesPoll = null;
         this.wsUrl = `${wsProtocol}//${wsHost}:${wsPort}/ws?role=viewer` +
                      (this.roomId ? `&room=${encodeURIComponent(this.roomId)}` : '');
         
@@ -173,6 +175,11 @@ class ViewerApp {
     }
     
     async init() {
+        // 会后重开同一分享链接时，直接读取持久化纪要，不再尝试加入已回收房间。
+        if (this.shareToken) {
+            const ended = await this.loadMinutes();
+            if (ended) return;
+        }
         // 初始化音频解锁机制（移动端必需）
         this.initAudioUnlock();
         
@@ -609,6 +616,7 @@ class ViewerApp {
                     this.completedTargetLines = [];
                     this.updateSourceText();
                     this.updateTargetText();
+                    if (this.shareToken) this.startMinutesPolling();
                     break;
                     
                 case 'auth_error':
@@ -636,7 +644,8 @@ class ViewerApp {
                     this.fatalError = true;
                     this.isTranslationActive = false;
                     this.updateConnectionStatus('Ended', false);
-                    this.showFatalError('本场翻译已结束');
+                    if (this.shareToken) this.startMinutesPolling();
+                    else this.showFatalError('本场翻译已结束');
                     break;
 
                 default:
@@ -645,6 +654,43 @@ class ViewerApp {
         } catch (error) {
             console.error('❌ 处理 WebSocket 消息失败:', error);
         }
+    }
+
+    async loadMinutes() {
+        if (!this.shareToken) return false;
+        const panel = document.getElementById('minutesPanel');
+        const status = document.getElementById('minutesStatus');
+        const content = document.getElementById('minutesContent');
+        try {
+            const response = await fetch(`/api/share/${encodeURIComponent(this.shareToken)}`, {cache: 'no-store'});
+            if (!response.ok) throw new Error('纪要链接无效或已撤销');
+            const data = await response.json();
+            const meeting = data.meeting;
+            if (!meeting.ended_at) return false;
+            panel.hidden = false;
+            const pendingText = meeting.status === 'failed' || meeting.status === 'needs_config'
+                ? '纪要暂不可用，请联系会议管理员。'
+                : '会议已结束，纪要生成或审核中，请稍后查看。';
+            status.textContent = meeting.published_at ? `${meeting.title} · 已发布` : pendingText;
+            content.textContent = meeting.minutes_text || '';
+            if (meeting.published_at && this.minutesPoll) {
+                clearInterval(this.minutesPoll);
+                this.minutesPoll = null;
+            }
+            if (!meeting.published_at) this.startMinutesPolling();
+            return true;
+        } catch (error) {
+            panel.hidden = false;
+            status.textContent = error.message;
+            content.textContent = '';
+            return true;
+        }
+    }
+
+    startMinutesPolling() {
+        if (this.minutesPoll) return;
+        this.minutesPoll = setInterval(() => this.loadMinutes(), 10000);
+        this.loadMinutes();
     }
 
     showFatalError(message) {

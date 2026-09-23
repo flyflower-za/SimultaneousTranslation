@@ -47,6 +47,10 @@ class TranslationSession:
         """
         self.config = config
         self.room_id = room_id
+        self.owner_code_id = None
+        self.meeting_id = None
+        self.share_token = None
+        self.on_idle_close = None
         self.created_at = time.time()
         self.volcengine_client: Optional[VolcengineASTClient] = None
         self.controller_websocket = None  # 控制端连接
@@ -223,6 +227,11 @@ class RoomRegistry:
                 room = self._rooms.get(room_id)
                 if room is None or room.controller_websocket is not None:
                     return
+                if room.on_idle_close:
+                    try:
+                        await room.on_idle_close()
+                    except Exception:
+                        logger.exception("[room %s] 会议收尾失败", room_id)
                 logger.info(f"[room {room_id}] 控制端超过保留时间未重连，回收房间（查看端 {len(room.viewer_websockets)} 个）")
                 await room.broadcast_to_viewers({
                     "type": "room_closed",
@@ -268,6 +277,7 @@ class RoomRegistry:
                 "department": room.controller_info.get("department", ""),
                 "topic": room.controller_info.get("topic", ""),
                 "code": room.controller_info.get("code", ""),
+                "share_token": room.share_token,
             })
         return sorted(result, key=lambda r: r["created_at"])
 
@@ -281,7 +291,8 @@ class TranslationServer:
     
     def __init__(self, config: dict, client_role: str = "controller",
                  access_db=None, code_id: Optional[int] = None,
-                 room_id: Optional[str] = None, code_info: Optional[dict] = None):
+                 room_id: Optional[str] = None, code_info: Optional[dict] = None,
+                 minutes_service=None):
         """
         初始化服务器
 
@@ -305,6 +316,7 @@ class TranslationServer:
         self.access_db = access_db
         self.code_id = code_id
         self.db_session_id = None  # 访问计量会话记录 ID
+        self.minutes_service = minutes_service
         # TTS 停流看门狗：字幕仍在推进但长时间没有 TTS 事件时自动重建火山引擎会话
         self._tts_watchdog_task = None
         self._last_tts_ts = None          # 最近一次 TTS 事件（350/351/352）时间
@@ -326,8 +338,13 @@ class TranslationServer:
 
         # 房间解析：控制端按 room 参数恢复或新建房间；查看端按 room 参数加入指定房间
         if client_role == "controller":
+            existing = ROOM_REGISTRY.get(self.room_id) if self.room_id else None
+            if existing and existing.owner_code_id != self.code_id:
+                raise PermissionError("该房间不属于当前访问码")
             self.session, created = ROOM_REGISTRY.get_or_create(self.room_id, self.config)
             self.room_id = self.session.room_id
+            if self.session.owner_code_id is None:
+                self.session.owner_code_id = self.code_id
             if created:
                 logger.info(f"创建新房间: {self.room_id}")
             else:
@@ -395,13 +412,27 @@ class TranslationServer:
                     pass
             # 控制端断开后房间保留一段时间等待重连，到期自动回收并通知查看端
             if self.room_id and self.session is not None:
-                ROOM_REGISTRY.schedule_idle_teardown(self.room_id)
+                if self.session.controller_websocket is None:
+                    ROOM_REGISTRY.schedule_idle_teardown(self.room_id)
         else:
             if self.viewer_client_id and self.session:
                 await self.session.remove_viewer(self.viewer_client_id)
         self.client_websocket = None
         logger.info(f"资源清理完成，角色: {client_role}")
     
+    def _set_idle_meeting_close(self):
+        meeting_id = self.session.meeting_id
+        async def finish_on_idle():
+            if self.access_db and self.access_db.end_meeting(meeting_id) and self.minutes_service:
+                self.minutes_service.schedule(meeting_id)
+        self.session.on_idle_close = finish_on_idle
+
+    async def _finish_meeting(self):
+        if self.access_db and self.session and self.session.meeting_id:
+            meeting_id = self.session.meeting_id
+            if self.access_db.end_meeting(meeting_id) and self.minutes_service:
+                self.minutes_service.schedule(meeting_id)
+
     async def _handle_controller_connection(self, websocket):
         """处理控制端连接"""
         # 初始化火山引擎客户端
@@ -440,6 +471,18 @@ class TranslationServer:
             # 注册到会话管理器
             await self.session.add_controller(websocket, self.volcengine_client)
 
+            # 一场会议跨短暂断线持续存在；显式停止后再次开始则创建新记录。
+            if self.access_db and self.code_id:
+                meeting = self.access_db.get_open_meeting(self.room_id, self.code_id)
+                if not meeting:
+                    langs = self.config.get("translation", {})
+                    meeting = self.access_db.create_meeting(
+                        self.room_id, self.code_id, self.code_info.get("topic", "会议"),
+                        langs.get("source_language", "zh"), langs.get("target_language", "en"))
+                self.session.meeting_id = meeting["id"]
+                self.session.share_token = meeting["share_token"]
+                self._set_idle_meeting_close()
+
             # 将控制端的访问码信息写入房间（管理端房间列表展示用）
             if self.code_info:
                 self.session.controller_info = {
@@ -457,7 +500,9 @@ class TranslationServer:
             await self._send_to_client({
                 "type": "room_info",
                 "room_id": self.room_id,
-                "viewer_path": f"/viewer?room={self.room_id}",
+                "viewer_path": (f"/viewer?room={self.room_id}&share={self.session.share_token}"
+                                if self.session.share_token else f"/viewer?room={self.room_id}"),
+                "share_token": self.session.share_token,
                 "message": f"房间 {self.room_id} 已就绪，查看端链接已生成"
             })
             logger.info("已通知前端连接成功")
@@ -622,6 +667,19 @@ class TranslationServer:
                         await self.volcengine_client.send_audio(audio_data)
                 elif msg_type == "start":
                     # 开始翻译
+                    if self.session and self.session.meeting_id and self.access_db:
+                        previous = self.access_db.get_meeting(self.session.meeting_id)
+                        if previous and previous["ended_at"]:
+                            langs = self.config.get("translation", {})
+                            meeting = self.access_db.create_meeting(
+                                self.room_id, self.code_id, self.code_info.get("topic", "会议"),
+                                langs.get("source_language", "zh"), langs.get("target_language", "en"))
+                            self.session.meeting_id = meeting["id"]
+                            self.session.share_token = meeting["share_token"]
+                            self._set_idle_meeting_close()
+                            await self._send_to_client({"type": "room_info", "room_id": self.room_id,
+                                "viewer_path": f"/viewer?room={self.room_id}&share={self.session.share_token}",
+                                "share_token": self.session.share_token})
                     if self.volcengine_client and not self.volcengine_client.connected:
                         await self.volcengine_client.connect()
                         await self.volcengine_client.send_start_session()
@@ -630,6 +688,7 @@ class TranslationServer:
                     logger.info("收到停止翻译请求")
                     if self.volcengine_client:
                         await self.volcengine_client.close()
+                    await self._finish_meeting()
                     
                     # 清除会话状态
                     if self.session:
@@ -796,6 +855,8 @@ class TranslationServer:
                     self.session.current_source_text = text
                 elif event == 652:  # SourceSubtitleEnd
                     if text:
+                        if self.access_db and self.session.meeting_id:
+                            self.access_db.add_meeting_segment(self.session.meeting_id, "source", text)
                         self.session.completed_source_lines.append(text)
                         if len(self.session.completed_source_lines) > self.session.max_history_lines:
                             self.session.completed_source_lines.pop(0)
@@ -804,6 +865,8 @@ class TranslationServer:
                     self.session.current_target_text = text
                 elif event == 655:  # TranslationSubtitleEnd
                     if text:
+                        if self.access_db and self.session.meeting_id:
+                            self.access_db.add_meeting_segment(self.session.meeting_id, "translation", text)
                         self.session.completed_target_lines.append(text)
                         if len(self.session.completed_target_lines) > self.session.max_history_lines:
                             self.session.completed_target_lines.pop(0)
@@ -1116,4 +1179,3 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         logger.info("服务器已停止")
-

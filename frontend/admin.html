@@ -501,6 +501,7 @@
             <div class="tab" data-tab="usage" onclick="switchTab('usage')"><span class="dot"></span>用量与成本</div>
             <div class="tab" data-tab="audit" onclick="switchTab('audit')"><span class="dot"></span>审计日志</div>
             <div class="tab" data-tab="rooms" onclick="switchTab('rooms')"><span class="dot"></span>活跃房间</div>
+            <div class="tab" data-tab="meetings" onclick="switchTab('meetings')"><span class="dot"></span>会议纪要</div>
         </div>
 
         <!-- 申请 -->
@@ -615,6 +616,27 @@
                 <span>当前进程内进行中的翻译房间；控制端断开后房间保留 5 分钟等待重连</span>
             </div>
             <div id="roomsTable"></div>
+        </div>
+        <div class="panel hidden" id="panel-meetings">
+            <div class="toolbar"><button class="btn sm ghost" onclick="loadMeetings()">⟳ 刷新会议</button>
+                <span>纪要由独立模型生成，管理员审核后发布给查看端</span></div>
+            <div id="meetingsTable"></div>
+            <div id="meetingDetail" class="hidden" style="margin-top:24px;">
+                <div class="section-title" id="meetingTitle"></div>
+                <div class="toolbar">
+                    <button class="btn sm ghost" onclick="meetingAction('generate')">重新生成</button>
+                    <button class="btn sm ghost" onclick="meetingAction('save')">保存草稿</button>
+                    <button class="btn sm ok" onclick="meetingAction('publish')">发布</button>
+                    <button class="btn sm ghost" onclick="meetingAction('unpublish')">撤回发布</button>
+                    <button class="btn sm danger" onclick="meetingAction('revoke_share')">撤销分享</button>
+                    <button class="btn sm ghost" onclick="copyMeetingLink()">复制查看链接</button>
+                    <button class="btn sm ghost" onclick="downloadMeetingMinutes()">下载 Markdown</button>
+                    <button class="btn sm danger" onclick="meetingAction('delete')">删除会议记录</button>
+                </div>
+                <textarea id="meetingMinutes" aria-label="纪要草稿" style="box-sizing:border-box;width:100%;min-height:340px;padding:16px;font:14px/1.6 monospace;"></textarea>
+                <div class="section-title" style="margin-top:24px;">字幕原文与译文</div>
+                <pre id="meetingTranscript" style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:480px;overflow:auto;"></pre>
+            </div>
         </div>
     </div>
     </div>
@@ -773,6 +795,80 @@ async function refreshAll() {
     else if (TAB === 'usage') await loadUsage(true);
     else if (TAB === 'audit') await loadAudit();
     else if (TAB === 'rooms') await loadRooms();
+    else if (TAB === 'meetings') await loadMeetings();
+}
+
+let selectedMeeting = null;
+async function loadMeetings() {
+    try {
+        const data = await api('/api/admin/meetings');
+        const root = document.getElementById('meetingsTable');
+        root.replaceChildren();
+        const table = document.createElement('table');
+        table.innerHTML = '<tr><th>会议</th><th>申请人</th><th>开始</th><th>状态</th><th>发布</th><th>操作</th></tr>';
+        for (const m of data.meetings) {
+            const tr = document.createElement('tr');
+            for (const value of [m.title || '未命名会议', m.applicant, fmtDT(m.started_at),
+                    m.status, m.published_at ? '已发布' : '未发布']) {
+                const td = document.createElement('td');
+                td.textContent = value;
+                tr.appendChild(td);
+            }
+            const td = document.createElement('td');
+            const button = document.createElement('button');
+            button.className = 'btn sm ghost';
+            button.textContent = '查看与编辑';
+            button.onclick = () => openMeeting(m.id);
+            td.appendChild(button);
+            tr.appendChild(td);
+            table.appendChild(tr);
+        }
+        root.appendChild(table);
+    } catch (e) { toast(e.message, false); }
+}
+async function openMeeting(id) {
+    try {
+        const data = await api(`/api/admin/meetings/${id}`);
+        selectedMeeting = data.meeting;
+        document.getElementById('meetingDetail').classList.remove('hidden');
+        document.getElementById('meetingTitle').textContent = `${selectedMeeting.title || '会议'} · #${id} · ${selectedMeeting.status}`;
+        document.getElementById('meetingMinutes').value = selectedMeeting.minutes_text || '';
+        document.getElementById('meetingTranscript').textContent = data.segments.map(s =>
+            `[${fmtDT(s.occurred_at)}] ${s.kind === 'source' ? '原文' : '译文'}：${s.text}`).join('\n');
+    } catch (e) { toast(e.message, false); }
+}
+async function meetingAction(action) {
+    if (!selectedMeeting) return;
+    if (action === 'revoke_share' && !confirm('撤销后原分享链接将无法查看纪要，确定？')) return;
+    if (action === 'delete' && !confirm('永久删除本场纪要和字幕，确定？')) return;
+    try {
+        const body = {action};
+        if (action === 'save') body.minutes_text = document.getElementById('meetingMinutes').value;
+        await post(`/api/admin/meetings/${selectedMeeting.id}`, body);
+        toast(action === 'generate' ? '已开始生成，请稍后刷新' : '操作成功');
+        if (action === 'delete') {
+            selectedMeeting = null;
+            document.getElementById('meetingDetail').classList.add('hidden');
+        } else await openMeeting(selectedMeeting.id);
+        await loadMeetings();
+    } catch (e) { toast(e.message, false); }
+}
+function downloadMeetingMinutes() {
+    if (!selectedMeeting) return;
+    const text = document.getElementById('meetingMinutes').value;
+    const blob = new Blob([text], {type: 'text/markdown;charset=utf-8'});
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `meeting-${selectedMeeting.id}.md`;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+async function copyMeetingLink() {
+    if (!selectedMeeting || selectedMeeting.share_revoked_at) return toast('分享已撤销', false);
+    const url = `${location.origin}/viewer?room=${encodeURIComponent(selectedMeeting.room_id)}&share=${encodeURIComponent(selectedMeeting.share_token)}`;
+    try { await navigator.clipboard.writeText(url); toast('链接已复制'); }
+    catch (e) { toast('复制失败', false); }
 }
 
 // ---------- 活跃房间 ----------
@@ -792,7 +888,7 @@ async function loadRooms() {
                 : '<span class="tag pending">等待重连</span>'}</td>
             <td>${r.viewer_count}</td>
             <td>${fmtDT(new Date(r.created_at * 1000).toISOString())}</td>
-            <td><button class="btn sm ghost" onclick="navigator.clipboard.writeText(location.origin + '/viewer?room=' + '${esc(r.room_id)}').then(() => toast('链接已复制'))">复制链接</button></td>
+            <td><button class="btn sm ghost" onclick="navigator.clipboard.writeText(location.origin + '/viewer?room=' + '${esc(r.room_id)}' + '&share=' + '${esc(r.share_token || '')}').then(() => toast('链接已复制'))">复制链接</button></td>
         </tr>`).join('')}</table>`
         : '<div class="empty">当前没有进行中的房间</div>';
     document.getElementById('roomsTable').innerHTML = html;

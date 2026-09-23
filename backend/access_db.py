@@ -99,9 +99,149 @@ class AccessDB:
             );
             CREATE INDEX IF NOT EXISTS idx_sessions_code ON sessions(code_id);
             CREATE INDEX IF NOT EXISTS idx_usage_code ON usage_events(code_id);
+            CREATE TABLE IF NOT EXISTS meetings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                room_id TEXT NOT NULL,
+                code_id INTEGER NOT NULL,
+                share_token TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL DEFAULT '',
+                source_language TEXT NOT NULL DEFAULT 'zh',
+                target_language TEXT NOT NULL DEFAULT 'en',
+                started_at TEXT NOT NULL,
+                ended_at TEXT,
+                status TEXT NOT NULL DEFAULT 'recording',
+                minutes_text TEXT NOT NULL DEFAULT '',
+                error TEXT NOT NULL DEFAULT '',
+                published_at TEXT,
+                share_revoked_at TEXT
+            );
+            CREATE TABLE IF NOT EXISTS meeting_segments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                meeting_id INTEGER NOT NULL,
+                kind TEXT NOT NULL CHECK(kind IN ('source', 'translation')),
+                text TEXT NOT NULL,
+                occurred_at TEXT NOT NULL,
+                FOREIGN KEY(meeting_id) REFERENCES meetings(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_meetings_code ON meetings(code_id, id);
+            CREATE INDEX IF NOT EXISTS idx_meetings_room ON meetings(room_id, id);
+            CREATE INDEX IF NOT EXISTS idx_segments_meeting ON meeting_segments(meeting_id, id);
             """)
 
     # ---------- 审计 ----------
+
+    # ---------- 会议纪要 ----------
+
+    def create_meeting(self, room_id: str, code_id: int, title: str,
+                       source_language: str, target_language: str) -> dict:
+        token = secrets.token_urlsafe(32)
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                """INSERT INTO meetings (room_id, code_id, share_token, title,
+                   source_language, target_language, started_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (room_id, code_id, token, title, source_language, target_language, now_iso()))
+            return dict(self._conn.execute(
+                "SELECT * FROM meetings WHERE id = ?", (cur.lastrowid,)).fetchone())
+
+    def get_meeting(self, meeting_id: int):
+        row = self._conn.execute("SELECT * FROM meetings WHERE id = ?", (meeting_id,)).fetchone()
+        return dict(row) if row else None
+
+    def get_open_meeting(self, room_id: str, code_id: int):
+        row = self._conn.execute(
+            """SELECT * FROM meetings WHERE room_id = ? AND code_id = ?
+               AND ended_at IS NULL ORDER BY id DESC LIMIT 1""", (room_id, code_id)).fetchone()
+        return dict(row) if row else None
+
+    def latest_shared_meeting_for_code(self, code_id: int):
+        row = self._conn.execute(
+            """SELECT * FROM meetings WHERE code_id = ? AND share_revoked_at IS NULL
+               ORDER BY id DESC LIMIT 1""", (code_id,)).fetchone()
+        return dict(row) if row else None
+
+    def get_shared_meeting(self, token: str):
+        row = self._conn.execute(
+            "SELECT * FROM meetings WHERE share_token = ? AND share_revoked_at IS NULL",
+            (token,)).fetchone()
+        return dict(row) if row else None
+
+    def list_meetings(self, code_id=None, limit=100):
+        if code_id is None:
+            rows = self._conn.execute(
+                """SELECT m.*, c.applicant FROM meetings m JOIN codes c ON c.id = m.code_id
+                   ORDER BY m.id DESC LIMIT ?""", (limit,)).fetchall()
+        else:
+            rows = self._conn.execute(
+                """SELECT m.*, c.applicant FROM meetings m JOIN codes c ON c.id = m.code_id
+                   WHERE m.code_id = ? ORDER BY m.id DESC LIMIT ?""", (code_id, limit)).fetchall()
+        return [dict(row) for row in rows]
+
+    def add_meeting_segment(self, meeting_id: int, kind: str, text: str):
+        if kind not in ("source", "translation") or not text:
+            return
+        with self._lock, self._conn:
+            self._conn.execute(
+                """INSERT INTO meeting_segments (meeting_id, kind, text, occurred_at)
+                   VALUES (?, ?, ?, ?)""", (meeting_id, kind, text, now_iso()))
+
+    def meeting_segments(self, meeting_id: int):
+        return [dict(row) for row in self._conn.execute(
+            "SELECT * FROM meeting_segments WHERE meeting_id = ? ORDER BY id", (meeting_id,)).fetchall()]
+
+    def end_meeting(self, meeting_id: int) -> bool:
+        with self._lock, self._conn:
+            cur = self._conn.execute(
+                """UPDATE meetings SET ended_at = ?, status = 'pending'
+                   WHERE id = ? AND ended_at IS NULL""", (now_iso(), meeting_id))
+            return cur.rowcount > 0
+
+    def end_orphan_meetings(self) -> list[int]:
+        """单进程重启后补齐未正常收尾的会议。"""
+        with self._lock, self._conn:
+            rows = self._conn.execute("SELECT id FROM meetings WHERE ended_at IS NULL").fetchall()
+            ids = [row["id"] for row in rows]
+            self._conn.execute(
+                "UPDATE meetings SET ended_at = ?, status = 'pending' WHERE ended_at IS NULL",
+                (now_iso(),))
+            return ids
+
+    def pending_minutes(self) -> list[int]:
+        with self._lock, self._conn:
+            self._conn.execute("UPDATE meetings SET status = 'pending' WHERE status = 'generating'")
+            rows = self._conn.execute(
+                """SELECT id FROM meetings WHERE ended_at IS NOT NULL
+                   AND status = 'pending'""").fetchall()
+            return [row["id"] for row in rows]
+
+    def set_meeting_status(self, meeting_id: int, status: str, error: str = ""):
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE meetings SET status = ?, error = ? WHERE id = ?",
+                (status, error[:500], meeting_id))
+
+    def save_minutes(self, meeting_id: int, text: str):
+        with self._lock, self._conn:
+            self._conn.execute(
+                """UPDATE meetings SET minutes_text = ?, status = 'draft', error = '',
+                   published_at = NULL WHERE id = ?""", (text, meeting_id))
+
+    def publish_minutes(self, meeting_id: int, publish: bool):
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE meetings SET published_at = ? WHERE id = ?",
+                (now_iso() if publish else None, meeting_id))
+
+    def revoke_meeting_share(self, meeting_id: int):
+        with self._lock, self._conn:
+            self._conn.execute(
+                "UPDATE meetings SET share_revoked_at = ? WHERE id = ?",
+                (now_iso(), meeting_id))
+
+    def delete_meeting(self, meeting_id: int):
+        with self._lock, self._conn:
+            self._conn.execute("DELETE FROM meeting_segments WHERE meeting_id = ?", (meeting_id,))
+            self._conn.execute("DELETE FROM meetings WHERE id = ?", (meeting_id,))
 
     def audit(self, actor: str, action: str, detail: str = ""):
         with self._lock, self._conn:

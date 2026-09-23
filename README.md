@@ -13,6 +13,7 @@
 - ✨ 文本纠正和敏感词过滤
 - 📱 移动设备支持（HTTPS）
 - 👥 多查看端支持（广播模式）
+- 📋 会后会议纪要：保存定稿字幕，由独立文本模型生成草稿，管理员审核发布后查看端沿原分享链接阅读
 - 🎨 现代化三列布局界面
 
 ## 系统要求
@@ -105,7 +106,6 @@ cp config/config.example.json config/config.json
 - 具体可用的音色 ID 请参考火山引擎官方文档
 
 ### 4. 生成 SSL 证书（移动设备访问需要）
-
 如果要在 iPad/手机 上使用麦克风功能，需要 HTTPS：
 
 ```bash
@@ -113,6 +113,14 @@ cp config/config.example.json config/config.json
 ```
 
 这会生成自签名 SSL 证书（保存在 `ssl/` 目录）。
+
+### 会议纪要模型配置（可在启动前完成）
+
+在 `config/config.json` 的 `minutes` 节填写独立文本模型的 `base_url` 与 `model`。
+服务会向 `{base_url}/chat/completions` 发送兼容 Chat Completions 的请求；
+密钥建议通过环境变量 `MINUTES_API_KEY` 设置，也可填 `minutes.api_key`。
+模型未配置时，实时翻译继续工作，会议和字幕仍会保存；管理员可在“会议纪要”页配置模型后重新生成，或直接手工编辑草稿。
+纪要默认只在管理员发布后向持有查看端分享链接的人开放。
 
 ### 5. 启动服务器
 

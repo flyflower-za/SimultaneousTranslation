@@ -38,6 +38,7 @@ from backend.access_db import AccessDB
 from backend.auth import (CookieSigner, get_code_id_from_request, is_admin,
                           make_user_cookie, make_admin_cookie)
 from backend.mailer import Mailer
+from backend.minutes import MinutesService
 
 logging.basicConfig(
     level=logging.INFO,
@@ -83,6 +84,7 @@ class AppContext:
                                     security.get("admin_notify_emails", []) if e.strip()]
         self.pricing = config.get("pricing", {})
         self.db = AccessDB(DB_PATH)
+        self.minutes = MinutesService(self.db, config)
         self.mailer = Mailer(config.get("smtp", {}))
         # 访问码验证失败限速（防爆破）：ip -> 最近失败时间戳列表
         self._verify_failures = {}
@@ -210,13 +212,19 @@ async def api_verify_code(request):
     # 查看端目标：解析该访问码当前进行中的房间，直接进入对应场次
     if target == "viewer":
         room_id = ROOM_REGISTRY.find_room_by_code(code_row["code"])
-        if not room_id:
-            return json_error(409, "访问码有效，但当前没有进行中的会议。")
+        meeting = ctx.db.get_open_meeting(room_id, code_row["id"]) if room_id else None
+        if meeting is None:
+            meeting = ctx.db.latest_shared_meeting_for_code(code_row["id"])
+        if not meeting:
+            return json_error(409, "访问码有效，但当前没有可查看的会议。")
+        room_id = meeting["room_id"] if not meeting["ended_at"] else None
+        redirect = (f"/viewer?room={room_id}&share={meeting['share_token']}" if room_id
+                    else f"/viewer?share={meeting['share_token']}")
         cookie_spec = make_user_cookie(ctx.signer, code_row["id"], secure=ctx.use_https)
         resp = web.json_response({"ok": True, "code_id": code_row["id"],
                                   "applicant": code_row["applicant"],
                                   "room_id": room_id,
-                                  "redirect": f"/viewer?room={room_id}"})
+                                  "redirect": redirect})
         return ctx.set_cookie(resp, cookie_spec)
 
     cookie_spec = make_user_cookie(ctx.signer, code_row["id"], secure=ctx.use_https)
@@ -452,6 +460,93 @@ async def api_admin_rooms(request):
     return web.json_response({"ok": True, "rooms": ROOM_REGISTRY.snapshot()})
 
 
+def meeting_public(row: dict) -> dict:
+    return {key: row[key] for key in ("id", "room_id", "title", "source_language",
+            "target_language", "started_at", "ended_at", "status", "published_at")}
+
+
+async def api_shared_minutes(request):
+    ctx: AppContext = request.app['ctx']
+    token = request.match_info['token']
+    if len(token) < 32 or len(token) > 128:
+        return json_error(404, "分享链接无效")
+    row = ctx.db.get_shared_meeting(token)
+    if not row:
+        return json_error(404, "分享链接无效或已撤销")
+    result = meeting_public(row)
+    if row["ended_at"] and row["published_at"]:
+        result["minutes_text"] = row["minutes_text"]
+    resp = web.json_response({"ok": True, "meeting": result})
+    resp.headers["Cache-Control"] = "no-store"
+    return resp
+
+
+@require_admin
+async def api_admin_meetings(request):
+    ctx: AppContext = request.app['ctx']
+    rows = ctx.db.list_meetings(limit=200)
+    return web.json_response({"ok": True, "meetings": [
+        {**meeting_public(row), "applicant": row["applicant"],
+         "share_revoked": bool(row["share_revoked_at"])} for row in rows]})
+
+
+@require_admin
+async def api_admin_meeting(request):
+    ctx: AppContext = request.app['ctx']
+    meeting_id = int(request.match_info['id'])
+    row = ctx.db.get_meeting(meeting_id)
+    if not row:
+        return json_error(404, "会议不存在")
+    return web.json_response({"ok": True, "meeting": row,
+                              "segments": ctx.db.meeting_segments(meeting_id)})
+
+
+@require_admin
+async def api_admin_meeting_action(request):
+    ctx: AppContext = request.app['ctx']
+    meeting_id = int(request.match_info['id'])
+    row = ctx.db.get_meeting(meeting_id)
+    if not row:
+        return json_error(404, "会议不存在")
+    try:
+        body = await request.json()
+    except Exception:
+        return json_error(400, "请求体格式错误")
+    action = body.get("action")
+    if action == "generate":
+        if not row["ended_at"]:
+            return json_error(409, "会议尚未结束")
+        if row["published_at"]:
+            return json_error(409, "请先撤回发布再重新生成")
+        if not ctx.minutes.schedule(meeting_id):
+            return json_error(409, "纪要模型未配置或任务正在运行")
+    elif action == "save":
+        content = body.get("minutes_text")
+        if not row["ended_at"] or not isinstance(content, str) or not content.strip() or len(content) > 200000:
+            return json_error(400, "纪要内容无效")
+        if row["status"] == "generating":
+            return json_error(409, "纪要正在生成，请稍后编辑")
+        if row["published_at"]:
+            return json_error(409, "请先撤回发布再编辑")
+        ctx.db.save_minutes(meeting_id, content.strip())
+    elif action == "publish":
+        if not row["ended_at"] or not row["minutes_text"] or row["status"] == "generating":
+            return json_error(409, "纪要尚未就绪")
+        ctx.db.publish_minutes(meeting_id, True)
+    elif action == "unpublish":
+        ctx.db.publish_minutes(meeting_id, False)
+    elif action == "revoke_share":
+        ctx.db.revoke_meeting_share(meeting_id)
+    elif action == "delete":
+        if not row["ended_at"] or row["status"] == "generating":
+            return json_error(409, "会议仍在进行或纪要正在生成")
+        ctx.db.delete_meeting(meeting_id)
+    else:
+        return json_error(400, "未知操作")
+    ctx.db.audit("admin", f"meeting_{action}", f"会议 #{meeting_id}")
+    return web.json_response({"ok": True, "meeting": ctx.db.get_meeting(meeting_id)})
+
+
 # ---------- WebSocket ----------
 
 async def websocket_handler(request):
@@ -520,7 +615,7 @@ async def websocket_handler(request):
         }
     server = TranslationServer(config, client_role=client_role,
                                access_db=ctx.db, code_id=code_id, room_id=room_id,
-                               code_info=code_info)
+                               code_info=code_info, minutes_service=ctx.minutes)
 
     # 创建适配器，让aiohttp的WebSocket看起来像websockets库的WebSocket
     class WebSocketAdapter:
@@ -649,6 +744,9 @@ async def start_server(port=15677, use_https=False):
         config = {}
     ctx = AppContext(config, use_https)
     app['ctx'] = ctx
+    ctx.db.end_orphan_meetings()
+    for meeting_id in ctx.db.pending_minutes():
+        ctx.minutes.schedule(meeting_id)
 
     server_config = (config or {}).get("server", {}) if isinstance(config, dict) else {}
     advertise_ip = server_config.get("advertise_ip")
@@ -685,11 +783,15 @@ async def start_server(port=15677, use_https=False):
         # 扫码/链接直达场景：携带房间参数即可进入（房间号本身即凭证，不可猜测且短时效）；
         # 无房间参数时要求访问码登录态，否则回到首页
         room_param = (request.query.get('room') or '').strip()
-        if not room_param and get_code_id_from_request(ctx.signer, request) is None:
+        share_param = (request.query.get('share') or '').strip()
+        if not room_param and not share_param and get_code_id_from_request(ctx.signer, request) is None:
             raise web.HTTPFound('/')
         viewer_path = os.path.join(frontend_dir, 'viewer.html')
         if os.path.exists(viewer_path):
-            return web.FileResponse(viewer_path)
+            resp = web.FileResponse(viewer_path)
+            resp.headers['Referrer-Policy'] = 'no-referrer'
+            resp.headers['Cache-Control'] = 'no-store'
+            return resp
         return web.Response(text="查看端页面未找到", status=404)
 
     app.router.add_get('/viewer', viewer_handler)
@@ -713,6 +815,10 @@ async def start_server(port=15677, use_https=False):
     app.router.add_get('/api/admin/usage', require_admin(api_admin_usage))
     app.router.add_get('/api/admin/audit', require_admin(api_admin_audit))
     app.router.add_get('/api/admin/rooms', require_admin(api_admin_rooms))
+    app.router.add_get('/api/admin/meetings', api_admin_meetings)
+    app.router.add_get('/api/admin/meetings/{id:\\d+}', api_admin_meeting)
+    app.router.add_post('/api/admin/meetings/{id:\\d+}', api_admin_meeting_action)
+    app.router.add_get('/api/share/{token}', api_shared_minutes)
     app.router.add_get('/api/health', api_health)
     app.router.add_get('/api/me', api_me)
 
@@ -802,8 +908,14 @@ async def start_server(port=15677, use_https=False):
     except KeyboardInterrupt:
         logger.info("服务器已停止")
     finally:
-        ctx.db.close()
         await runner.cleanup()
+        for room in list(ROOM_REGISTRY._rooms.values()):
+            if room.meeting_id and ctx.db.end_meeting(room.meeting_id):
+                ctx.minutes.schedule(room.meeting_id)
+        for task in list(ROOM_REGISTRY._idle_tasks.values()):
+            task.cancel()
+        await ctx.minutes.shutdown()
+        ctx.db.close()
 
 
 def main():

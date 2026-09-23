@@ -371,14 +371,16 @@ class VolcengineASTClient:
     
     async def close(self):
         """关闭连接"""
-        self.connected = False
-
         # 发送结束会话请求
-        if self.session_id:
+        if self.connected and self.session_id:
             try:
                 await self.send_finish_session()
+                # 给服务端最后的字幕和用量响应一个短暂的收尾窗口。
+                await asyncio.sleep(0.5)
             except Exception as e:
                 logger.debug(f"发送 FinishSession 失败: {e}")
+
+        self.connected = False
 
         # 取消接收任务
         if self._receive_task and not self._receive_task.done():

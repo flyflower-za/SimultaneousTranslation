@@ -15,6 +15,7 @@ class TranslationApp {
         // WebSocket 路径为 /ws，角色为 controller（控制端）
         this.wsBaseUrl = `${wsProtocol}//${wsHost}:${wsPort}/ws?role=controller`;
         this.roomId = null;          // 当前房间 ID（服务端 room_info 下发）
+        this.shareToken = null;      // 会后纪要分享凭证
         this.roomResumeWindowMs = 10 * 60 * 1000;  // 断线后可恢复房间的时间窗
 
         console.log('WebSocket URL 配置:', {
@@ -1243,7 +1244,8 @@ class TranslationApp {
     getViewerUrl() {
         /** 本场查看端完整链接 */
         if (!this.roomId) return '';
-        return `${window.location.origin}/viewer?room=${encodeURIComponent(this.roomId)}`;
+        const share = this.shareToken ? `&share=${encodeURIComponent(this.shareToken)}` : '';
+        return `${window.location.origin}/viewer?room=${encodeURIComponent(this.roomId)}${share}`;
     }
 
     updateShareCard() {
@@ -1347,7 +1349,7 @@ class TranslationApp {
         const link = document.querySelector('.viewer-link-btn');
         if (!link) return;
         if (this.roomId) {
-            link.href = `/viewer?room=${encodeURIComponent(this.roomId)}`;
+            link.href = this.getViewerUrl();
             link.title = `本场查看端链接（房间 ${this.roomId}）`;
             link.classList.remove('disabled');
         } else {
@@ -1452,6 +1454,7 @@ class TranslationApp {
                 case 'room_info':
                     // 房间就绪：记录房间 ID 并更新查看端链接
                     console.log(`🏠 ${message.message}`);
+                    this.shareToken = message.share_token || null;
                     this.saveRoom(message.room_id);
                     break;
                     
@@ -3579,4 +3582,3 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }, { once: false });
 });
-

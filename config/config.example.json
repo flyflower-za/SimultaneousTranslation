@@ -44,5 +44,14 @@
     "input_audio_per_ktoken": 0,
     "output_audio_per_ktoken": 0,
     "output_text_per_ktoken": 0
+  },
+  "minutes": {
+    "base_url": "https://your-text-model.example.com/v1",
+    "model": "your-minutes-model",
+    "api_key": "",
+    "output_language": "中文",
+    "timeout_sec": 120,
+    "chunk_chars": 12000,
+    "max_tokens": 2500
   }
 }
