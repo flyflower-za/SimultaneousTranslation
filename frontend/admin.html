@@ -452,6 +452,70 @@
             100% { background-position: -200% 0; }
         }
 
+        /* ========== 纪要模型配置 ========== */
+        .mm-status {
+            display: inline-flex; align-items: center; gap: 6px;
+            margin-top: 10px; padding: 5px 12px;
+            font-size: 12.5px; border-radius: 999px;
+            background: var(--bg-soft); color: var(--ink-2);
+            border: 1px solid var(--line-strong);
+        }
+        .mm-status::before {
+            content: ''; width: 7px; height: 7px; border-radius: 50%;
+            background: var(--ink-4);
+        }
+        .mm-status.ok { background: var(--ok-bg); color: var(--ok-ink); border-color: transparent; }
+        .mm-status.ok::before { background: var(--ok); }
+        .mm-status.err { background: var(--danger-bg); color: var(--danger-ink); border-color: transparent; }
+        .mm-status.err::before { background: var(--danger); }
+
+        #minutesModelForm { margin-top: 20px; }
+        #minutesModelForm fieldset {
+            border: 1px solid var(--line-strong); border-radius: 12px;
+            padding: 18px 18px 20px; margin: 0 0 18px;
+            background: var(--bg-card); box-shadow: var(--shadow-sm);
+            display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px 16px;
+        }
+        #minutesModelForm fieldset:last-of-type { margin-bottom: 0; }
+        #minutesModelForm legend {
+            padding: 0 8px; font-size: 13px; font-weight: 600; color: var(--ink-2);
+            display: flex; align-items: center; gap: 6px;
+        }
+        #minutesModelForm legend::before {
+            content: ''; width: 3px; height: 12px; border-radius: 2px;
+            background: var(--primary);
+        }
+        #minutesModelForm label {
+            display: flex; flex-direction: column; gap: 6px;
+            font-size: 12.5px; color: var(--ink-3); font-weight: 500;
+        }
+        #minutesModelForm input[type="text"],
+        #minutesModelForm input[type="url"],
+        #minutesModelForm input[type="password"],
+        #minutesModelForm input[type="number"] {
+            width: 100%; padding: 9px 12px;
+            border: 1px solid var(--line-strong); border-radius: 8px;
+            font-size: 13.5px; color: var(--ink-1); background: var(--bg-card);
+            outline: none; transition: border-color .15s, box-shadow .15s;
+        }
+        #minutesModelForm input:focus {
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px rgba(102, 118, 234, .14);
+        }
+        #minutesModelForm input::placeholder { color: var(--ink-4); }
+        #minutesModelForm .checkbox-row {
+            flex-direction: row; align-items: center; gap: 8px;
+            color: var(--ink-2); font-size: 13px; cursor: pointer;
+            align-self: end; padding-bottom: 9px;
+        }
+        #minutesModelForm .checkbox-row input { width: 15px; height: 15px; accent-color: var(--primary); cursor: pointer; }
+        #minutesModelForm .form-actions {
+            display: flex; align-items: center; gap: 14px;
+            margin-top: 18px; padding: 14px 18px;
+            background: var(--bg-soft); border-radius: 12px;
+        }
+        #minutesModelForm .form-actions .tip { font-size: 12px; color: var(--ink-3); }
+
         /* ========== 响应式 ========== */
         @media (max-width: 900px) {
             .board { padding: 18px 16px 22px; }
@@ -651,22 +715,37 @@
         <div class="panel hidden" id="panel-minutes-model">
             <div class="section-title">纪要模型配置</div>
             <p class="hint">配置保存在服务器本地数据库；API Key 不会回传到页面。环境变量 MINUTES_API_KEY 优先。</p>
-            <p id="minutesModelStatus" class="hint"></p>
-            <form id="minutesModelForm" onsubmit="saveMinutesModelSettings(event)" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;">
-                <label>接口地址 <input name="base_url" type="url" placeholder="https://example.com/v1" style="width:100%;box-sizing:border-box"></label>
-                <label>模型名称 <input name="model" type="text" style="width:100%;box-sizing:border-box"></label>
-                <label>输出语言 <input name="output_language" type="text" value="中文" style="width:100%;box-sizing:border-box"></label>
-                <label>API Key（留空则保留） <input name="api_key" type="password" autocomplete="new-password" style="width:100%;box-sizing:border-box"></label>
-                <label>调用超时（秒） <input name="timeout_sec" type="number" min="5" max="600" value="120"></label>
-                <label>每段最大字符 <input name="chunk_chars" type="number" min="2000" max="30000" value="12000"></label>
-                <label>最大输出 Token <input name="max_tokens" type="number" min="256" max="8192" value="2500"></label>
-                <label>最大尝试次数 <input name="max_attempts" type="number" min="1" max="10" value="3"></label>
-                <label>首次重试间隔（秒） <input name="retry_delay_sec" type="number" min="1" max="3600" value="30"></label>
-                <label>输入价格／百万 Token <input name="input_per_million" type="number" min="0" step="0.0001" value="0"></label>
-                <label>输出价格／百万 Token <input name="output_per_million" type="number" min="0" step="0.0001" value="0"></label>
-                <label>计价币种 <input name="currency" type="text" value="CNY"></label>
-                <label><input name="clear_api_key" type="checkbox"> 清除已保存的 API Key</label>
-                <div><button class="btn ok" type="submit">保存模型配置</button></div>
+            <span id="minutesModelStatus" class="mm-status" style="display:none;"></span>
+            <form id="minutesModelForm" onsubmit="saveMinutesModelSettings(event)">
+                <fieldset>
+                    <legend>接口与模型</legend>
+                    <label>接口地址 <input name="base_url" type="url" placeholder="https://example.com/v1"></label>
+                    <label>模型名称 <input name="model" type="text" placeholder="例如 gpt-4o-mini"></label>
+                    <label>输出语言 <input name="output_language" type="text" value="中文"></label>
+                    <label>API Key（留空则保留） <input name="api_key" type="password" autocomplete="new-password" placeholder="••••••••"></label>
+                    <label class="checkbox-row"><input name="clear_api_key" type="checkbox"> 清除已保存的 API Key</label>
+                </fieldset>
+                <fieldset>
+                    <legend>生成参数</legend>
+                    <label>调用超时（秒） <input name="timeout_sec" type="number" min="5" max="600" value="120"></label>
+                    <label>每段最大字符 <input name="chunk_chars" type="number" min="2000" max="30000" value="12000"></label>
+                    <label>最大输出 Token <input name="max_tokens" type="number" min="256" max="8192" value="2500"></label>
+                </fieldset>
+                <fieldset>
+                    <legend>重试策略</legend>
+                    <label>最大尝试次数 <input name="max_attempts" type="number" min="1" max="10" value="3"></label>
+                    <label>首次重试间隔（秒） <input name="retry_delay_sec" type="number" min="1" max="3600" value="30"></label>
+                </fieldset>
+                <fieldset>
+                    <legend>用量与成本</legend>
+                    <label>输入价格／百万 Token <input name="input_per_million" type="number" min="0" step="0.0001" value="0"></label>
+                    <label>输出价格／百万 Token <input name="output_per_million" type="number" min="0" step="0.0001" value="0"></label>
+                    <label>计价币种 <input name="currency" type="text" value="CNY"></label>
+                </fieldset>
+                <div class="form-actions">
+                    <button class="btn ok" type="submit">保存模型配置</button>
+                    <span class="tip">保存后立即生效，下一次生成纪要时使用新配置</span>
+                </div>
             </form>
         </div>
     </div>
@@ -943,8 +1022,12 @@ async function loadMinutesModelSettings() {
         }
         form.elements.api_key.value = '';
         form.elements.clear_api_key.checked = false;
-        document.getElementById('minutesModelStatus').textContent =
-            `API Key：${settings.api_key_set ? '已配置' : '未配置'}${settings.api_key_from_env ? '（由环境变量提供）' : ''}`;
+        const statusEl = document.getElementById('minutesModelStatus');
+        const keyText = `API Key：${settings.api_key_set ? '已配置' : '未配置'}${settings.api_key_from_env ? '（由环境变量提供）' : ''}`;
+        const modelText = settings.model ? ` · 模型：${settings.model}` : '';
+        statusEl.textContent = keyText + modelText;
+        statusEl.className = 'mm-status ' + (settings.api_key_set ? 'ok' : 'err');
+        statusEl.style.display = 'inline-flex';
     } catch (e) { toast(e.message, false); }
 }
 async function saveMinutesModelSettings(event) {
