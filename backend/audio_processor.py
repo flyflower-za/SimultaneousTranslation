@@ -1,7 +1,6 @@
 """
 音频处理工具模块
 """
-import struct
 import logging
 
 logger = logging.getLogger(__name__)
@@ -31,7 +30,7 @@ def validate_audio_format(sample_rate: int, channels: int, bits_per_sample: int)
     return True
 
 
-def convert_to_pcm16_mono(audio_data: bytes, 
+def convert_to_pcm16_mono(audio_data: bytes,
                           input_sample_rate: int,
                           input_channels: int,
                           input_bits_per_sample: int) -> bytes:
@@ -50,24 +49,24 @@ def convert_to_pcm16_mono(audio_data: bytes,
         转换后的 PCM 数据
     """
     # 如果已经是目标格式，直接返回
-    if (input_sample_rate == 16000 and 
-        input_channels == 1 and 
+    if (input_sample_rate == 16000 and
+        input_channels == 1 and
         input_bits_per_sample == 16):
         return audio_data
-    
+
     # 简化处理：如果格式不匹配，记录警告
     # 实际应用中应该使用音频处理库进行重采样和格式转换
     logger.warning(
         f"音频格式转换：{input_sample_rate}Hz, {input_channels}ch, {input_bits_per_sample}bit -> "
         f"16000Hz, 1ch, 16bit"
     )
-    
+
     # 这里应该实现实际的转换逻辑
     # 由于浏览器端已经处理了格式转换，这里主要做验证
     return audio_data
 
 
-def split_audio_chunks(audio_data: bytes, 
+def split_audio_chunks(audio_data: bytes,
                       sample_rate: int = 16000,
                       chunk_duration_ms: int = 80) -> list:
     """
@@ -86,12 +85,12 @@ def split_audio_chunks(audio_data: bytes,
     bytes_per_sample = 2
     samples_per_chunk = int(sample_rate * chunk_duration_ms / 1000)
     bytes_per_chunk = samples_per_chunk * bytes_per_sample
-    
+
     chunks = []
     for i in range(0, len(audio_data), bytes_per_chunk):
         chunk = audio_data[i:i + bytes_per_chunk]
         if len(chunk) > 0:
             chunks.append(chunk)
-    
+
     return chunks
 

@@ -1,8 +1,8 @@
 """
 文本过滤模块 - 用于过滤不文明用词
 """
-import re
 import logging
+import re
 from typing import List
 
 logger = logging.getLogger(__name__)
@@ -10,7 +10,7 @@ logger = logging.getLogger(__name__)
 
 class TextFilter:
     """文本过滤器"""
-    
+
     def __init__(self, word_list: List[str] = None):
         """
         初始化过滤器
@@ -20,13 +20,13 @@ class TextFilter:
         """
         if word_list is None:
             word_list = self._get_default_word_list()
-        
+
         # 构建正则表达式模式
         # 使用 | 连接所有敏感词，支持部分匹配
         self.pattern = self._build_pattern(word_list)
         self.word_list = word_list
         logger.info(f"文本过滤器已初始化，包含 {len(word_list)} 个敏感词")
-    
+
     def _get_default_word_list(self) -> List[str]:
         """
         获取默认敏感词列表
@@ -41,10 +41,10 @@ class TextFilter:
             # 示例（已注释，避免误过滤）：
             "fuck", "shit", "damn","禁淫","傻逼","滚","傻子", "小鸡"
         ]
-        
+
         # 如果列表为空，返回空列表（不进行过滤）
         return default_words
-    
+
     def _build_pattern(self, word_list: List[str]) -> re.Pattern:
         """
         构建正则表达式模式
@@ -58,19 +58,19 @@ class TextFilter:
         if not word_list:
             # 如果没有敏感词，返回一个永远不匹配的模式
             return re.compile(r'(?!x)x')
-        
+
         # 转义特殊字符并按长度排序（长的优先匹配）
         escaped_words = [re.escape(word) for word in sorted(word_list, key=len, reverse=True)]
-        
+
         # 构建正则表达式：支持词边界或直接匹配
         pattern_str = '|'.join(escaped_words)
-        
+
         try:
             return re.compile(pattern_str, re.IGNORECASE)
         except re.error as e:
             logger.error(f"构建正则表达式失败: {e}")
             return re.compile(r'(?!x)x')
-    
+
     def filter_text(self, text: str, replacement: str = "***") -> str:
         """
         过滤文本中的敏感词
@@ -84,20 +84,20 @@ class TextFilter:
         """
         if not text or not self.word_list:
             return text
-        
+
         try:
             # 使用正则表达式替换敏感词
             filtered_text = self.pattern.sub(replacement, text)
-            
+
             # 如果文本被修改，记录日志（但不记录具体内容）
             if filtered_text != text:
                 logger.debug(f"文本已过滤，原始长度: {len(text)}, 过滤后长度: {len(filtered_text)}")
-            
+
             return filtered_text
         except Exception as e:
             logger.error(f"过滤文本时出错: {e}")
             return text
-    
+
     def has_sensitive_words(self, text: str) -> bool:
         """
         检查文本是否包含敏感词
@@ -110,7 +110,7 @@ class TextFilter:
         """
         if not text or not self.word_list:
             return False
-        
+
         try:
             return bool(self.pattern.search(text))
         except Exception as e:

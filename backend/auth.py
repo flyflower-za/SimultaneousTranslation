@@ -1,10 +1,10 @@
 """
 鉴权工具：HMAC 签名 cookie（用户访问码 / 管理员两种登录态）
 """
+import base64
 import hashlib
 import hmac
 import json
-import base64
 import time
 from typing import Optional
 

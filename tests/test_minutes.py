@@ -8,12 +8,12 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from backend.access_db import AccessDB, now_iso
-from backend.minutes import MinutesService, Completion, align_segments, transcript_chunks
+from backend.api.admin import api_admin_minutes_settings
+from backend.api.meetings import api_download_meeting, api_my_meeting, api_shared_minutes
+from backend.auth import CookieSigner, make_admin_cookie, make_user_cookie
+from backend.minutes import Completion, MinutesService, align_segments, transcript_chunks
 from backend.server import ROOM_REGISTRY, TranslationServer
 from backend.volcengine_client import VolcengineASTClient
-from backend.auth import CookieSigner, make_user_cookie, make_admin_cookie
-from start_server import (api_shared_minutes, api_my_meeting, api_download_meeting,
-                          api_admin_minutes_settings)
 
 
 class MinutesTests(unittest.IsolatedAsyncioTestCase):

@@ -4,23 +4,21 @@
 import asyncio
 import json
 import logging
-import secrets
-import time
-import websockets
-from websockets.server import serve
-from typing import Optional, Dict, List
-import sys
 import os
+import secrets
+import sys
+import time
 import uuid
-import inspect
+from typing import Dict, List, Optional
+
+from websockets.server import serve
 
 # 添加项目根目录到路径
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from backend.volcengine_client import VolcengineASTClient
-from backend.audio_processor import validate_audio_format
-from backend.text_filter import filter_text
 from backend.text_corrector import correct_text, get_corrector
+from backend.text_filter import filter_text
+from backend.volcengine_client import VolcengineASTClient
 
 # 配置日志
 logging.basicConfig(
@@ -97,14 +95,14 @@ class TranslationSession:
         logger.info(f"[room {self.room_id}] 查看端已连接，客户端ID: {client_id}，"
                     f"当前查看端数量: {len(self.viewer_websockets)}")
         return client_id
-    
+
     async def remove_viewer(self, client_id: str):
         """移除查看端连接"""
         self.viewer_wants_tts.discard(client_id)
         if client_id in self.viewer_websockets:
             del self.viewer_websockets[client_id]
             logger.info(f"查看端已断开，客户端ID: {client_id}，当前查看端数量: {len(self.viewer_websockets)}")
-    
+
     async def broadcast_to_viewers(self, message: dict, tts_client_ids: Optional[set] = None):
         """向所有查看端广播消息。
 
@@ -151,11 +149,11 @@ class TranslationSession:
             except Exception as e:
                 logger.error(f"向查看端 {client_id} 发送消息失败: {e}")
                 disconnected_clients.append(client_id)
-        
+
         # 清理断开的连接
         for client_id in disconnected_clients:
             await self.remove_viewer(client_id)
-    
+
     async def send_state_to_viewer(self, websocket):
         """向新连接的查看端发送当前状态"""
         state_message = {
@@ -165,7 +163,7 @@ class TranslationSession:
             "completed_source_lines": self.completed_source_lines[-self.max_history_lines:],
             "completed_target_lines": self.completed_target_lines[-self.max_history_lines:]
         }
-        
+
         try:
             if hasattr(websocket, 'send_str'):
                 # send_str 是异步方法（WebSocketAdapter 中定义的）
@@ -288,7 +286,7 @@ ROOM_REGISTRY = RoomRegistry()
 
 class TranslationServer:
     """翻译服务器"""
-    
+
     def __init__(self, config: dict, client_role: str = "controller",
                  access_db=None, code_id: Optional[int] = None,
                  room_id: Optional[str] = None, code_info: Optional[dict] = None,
@@ -324,7 +322,7 @@ class TranslationServer:
         self._controller_connected_ts = None
         self._tts_rebuild_count = 0
         self._volcengine_rebuilding = False  # 会话重建中，音频直接丢弃避免并发重连
-        
+
     async def handle_client(self, websocket, client_role: str = "controller"):
         """
         处理客户端连接（初始化阶段）
@@ -376,7 +374,7 @@ class TranslationServer:
             except:
                 pass
             raise  # 重新抛出异常，让上层处理
-    
+
     async def cleanup(self, client_role: str):
         """
         清理资源（在连接真正关闭时调用）
@@ -419,7 +417,7 @@ class TranslationServer:
                 await self.session.remove_viewer(self.viewer_client_id)
         self.client_websocket = None
         logger.info(f"资源清理完成，角色: {client_role}")
-    
+
     def _set_idle_meeting_close(self):
         meeting_id = self.session.meeting_id
         async def finish_on_idle():
@@ -439,7 +437,7 @@ class TranslationServer:
         volc_config = self.config["volcengine"]
         translation_config = self.config.get("translation", {})
         tts_config = self.config.get("tts", {})
-        
+
         self.volcengine_client = VolcengineASTClient(
             api_key=volc_config["api_key"],
             resource_id=volc_config.get("resource_id", "volc.service_type.10053"),
@@ -448,26 +446,26 @@ class TranslationServer:
             tts_speaker_id=tts_config.get("speaker_id", ""),
             speech_rate=tts_config.get("speech_rate", 0)
         )
-        
+
         # 设置消息回调
         self.volcengine_client.on_message = self._handle_volcengine_message
         self.volcengine_client.on_error = self._handle_volcengine_error
-        
+
         # 连接到火山引擎
         logger.info("正在连接到火山引擎 API...")
         try:
             await self.volcengine_client.connect()
             logger.info("已连接到火山引擎 API")
-            
+
             # 验证连接状态
             if not self.volcengine_client.connected:
                 raise Exception("火山引擎客户端连接失败：connected 状态为 False")
-            
+
             # 发送开始会话请求
             logger.info("发送 StartSession 请求...")
             await self.volcengine_client.send_start_session()
             logger.info("StartSession 请求已发送，等待响应...")
-            
+
             # 注册到会话管理器
             await self.session.add_controller(websocket, self.volcengine_client)
 
@@ -491,7 +489,7 @@ class TranslationServer:
                     "topic": self.code_info.get("topic", ""),
                     "code": self.code_info.get("code", ""),
                 }
-            
+
             # 通知前端连接成功，并告知房间信息（查看端链接凭此加入本场）
             await self._send_to_client({
                 "type": "connected",
@@ -528,14 +526,14 @@ class TranslationServer:
                 except:
                     pass
                 self.volcengine_client = None
-            
+
             # 通知前端连接失败
             await self._send_to_client({
                 "type": "error",
                 "message": f"连接翻译服务失败: {str(e)}"
             })
             raise  # 重新抛出异常，让上层处理
-    
+
     async def _handle_viewer_connection(self, websocket):
         """处理查看端连接"""
         # 注册到会话管理器（这是关键步骤，如果失败应该抛出异常）
@@ -546,12 +544,12 @@ class TranslationServer:
         except Exception as e:
             logger.error(f"注册查看端失败: {e}", exc_info=True)
             raise  # 注册失败应该抛出异常
-        
+
         # iOS Safari 特殊处理：延迟发送消息，确保连接完全建立
         # iOS Safari 在 WebSocket 连接刚建立时可能无法立即接收消息
         import asyncio
         await asyncio.sleep(0.1)  # 延迟 100ms，确保连接稳定
-        
+
         # 发送当前状态（失败不应该影响连接建立）
         try:
             await self.session.send_state_to_viewer(websocket)
@@ -559,10 +557,10 @@ class TranslationServer:
         except Exception as e:
             logger.error(f"发送状态同步消息失败: {e}", exc_info=True)
             # 不抛出异常，避免影响连接建立
-        
+
         # 再次延迟，确保第一条消息已发送
         await asyncio.sleep(0.05)  # 延迟 50ms
-        
+
         # 通知连接成功（失败不应该影响连接建立）
         try:
             await self._send_to_client({
@@ -573,10 +571,10 @@ class TranslationServer:
         except Exception as e:
             logger.error(f"发送连接成功消息失败: {e}", exc_info=True)
             # 不抛出异常，避免影响连接建立（消息发送失败不应该导致连接失败）
-        
+
         # 查看端的消息循环在 start_server.py 中处理
         # 这里只处理查看端的控制消息（如心跳）
-    
+
     async def _handle_client_message(self, message):
         """
         处理来自客户端的消息
@@ -595,7 +593,7 @@ class TranslationServer:
                 # 火山引擎会话重建期间直接丢弃音频，避免触发并发重连
                 if self._volcengine_rebuilding:
                     return
-                
+
                 if not self.volcengine_client.connected:
                     logger.warning("收到音频数据但火山引擎客户端未连接，尝试重新连接...")
                     logger.debug(f"volcengine_client.connected: {self.volcengine_client.connected}")
@@ -613,12 +611,12 @@ class TranslationServer:
                     except Exception as e:
                         logger.error(f"重新连接失败: {e}", exc_info=True)
                         return
-                
+
                 # 检查会话是否已启动
                 if not self.volcengine_client.session_id:
                     logger.warning("收到音频数据但会话未启动，尝试启动会话...")
                     await self.volcengine_client.send_start_session()
-                
+
                 # 记录音频数据接收（每 100 次记录一次，避免日志过多）
                 if not hasattr(self, '_audio_receive_count'):
                     self._audio_receive_count = 0
@@ -627,7 +625,7 @@ class TranslationServer:
                     logger.info(f"✓ 开始接收音频数据，第一个包大小: {len(message)} 字节")
                 if self._audio_receive_count % 100 == 0:
                     logger.info(f"已接收 {self._audio_receive_count} 个音频包，当前包大小: {len(message)} 字节")
-                
+
                 await self.volcengine_client.send_audio(message)
             elif isinstance(message, str):
                 # JSON 消息
@@ -636,9 +634,9 @@ class TranslationServer:
                 except json.JSONDecodeError:
                     logger.warning(f"无法解析 JSON 消息: {message[:100]}")
                     return
-                
+
                 msg_type = data.get("type")
-                
+
                 # 查看端的心跳消息
                 if self.client_role == "viewer" and msg_type == "ping":
                     await self._send_to_client({"type": "pong"})
@@ -654,11 +652,11 @@ class TranslationServer:
                             self.session.viewer_wants_tts.discard(self.viewer_client_id)
                             logger.info(f"[room {self.session.room_id}] 查看端 {self.viewer_client_id} 取消订阅 TTS 音频")
                     return
-                
+
                 # 控制端的消息处理
                 if self.client_role != "controller":
                     return  # 查看端不处理其他消息
-                
+
                 if msg_type == "audio":
                     # 音频数据（base64 编码）
                     import base64
@@ -689,7 +687,7 @@ class TranslationServer:
                     if self.volcengine_client:
                         await self.volcengine_client.close()
                     await self._finish_meeting()
-                    
+
                     # 清除会话状态
                     if self.session:
                         self.session.current_source_text = ""
@@ -697,7 +695,7 @@ class TranslationServer:
                         self.session.completed_source_lines = []
                         self.session.completed_target_lines = []
                         logger.info("已清除会话状态")
-                    
+
                     # 广播停止消息给所有查看端
                     if self.session:
                         await self.session.broadcast_to_viewers({
@@ -724,14 +722,14 @@ class TranslationServer:
                     self.config.setdefault("translation", {})
                     self.config["translation"]["source_language"] = source_lang
                     self.config["translation"]["target_language"] = target_lang
-                    
+
                     # 如果客户端已连接，需要重新启动会话以应用新语言
                     if self.volcengine_client and self.volcengine_client.connected:
                         # 更新客户端的语言设置
                         self.volcengine_client.source_lang = source_lang
                         self.volcengine_client.target_lang = target_lang
                         logger.info(f"已更新客户端语言设置为: {source_lang} -> {target_lang}")
-                        
+
                         # 如果会话已启动，需要重新启动会话以应用新语言
                         if self.volcengine_client.session_id:
                             logger.info("会话已启动，重新启动会话以应用新语言...")
@@ -740,7 +738,7 @@ class TranslationServer:
                             await self.volcengine_client.connect()
                             await self.volcengine_client.send_start_session()
                             logger.info("会话已重新启动，新语言已应用")
-                            
+
                             # 通知前端语言已更新
                             await self._send_to_client({
                                 "type": "language_updated",
@@ -764,13 +762,13 @@ class TranslationServer:
                     # 更新TTS音色
                     speaker_id = data.get("speaker_id", "")
                     logger.info(f"收到音色更新请求: speaker_id={speaker_id}")
-                    
+
                     # 如果客户端已连接，需要重新启动会话以应用新音色
                     if self.volcengine_client and self.volcengine_client.connected:
                         # 更新客户端的音色设置
                         self.volcengine_client.tts_speaker_id = speaker_id
                         logger.info(f"已更新客户端音色设置为: {speaker_id or '默认音色'}")
-                        
+
                         # 如果会话已启动，需要重新启动会话以应用新音色
                         if self.volcengine_client.session_id:
                             logger.info("会话已启动，重新启动会话以应用新音色...")
@@ -779,7 +777,7 @@ class TranslationServer:
                             await self.volcengine_client.connect()
                             await self.volcengine_client.send_start_session()
                             logger.info("会话已重新启动，新音色已应用")
-                            
+
                             # 通知前端音色已更新
                             await self._send_to_client({
                                 "type": "voice_updated",
@@ -803,7 +801,7 @@ class TranslationServer:
                         })
         except Exception as e:
             logger.error(f"处理客户端消息时出错: {e}", exc_info=True)
-    
+
     async def _handle_volcengine_message(self, data: dict):
         """
         处理来自火山引擎的消息
@@ -875,11 +873,11 @@ class TranslationServer:
                         if len(self.session.completed_target_lines) > self.session.max_history_lines:
                             self.session.completed_target_lines.pop(0)
                         self.session.current_target_text = ""
-            
+
             # 记录所有重要事件的调用
             if event in [350, 351, 352, 650, 651, 652, 653, 654, 655]:
                 logger.info(f"📥 _handle_volcengine_message 被调用，event={event}, text='{text[:50] if text else ''}'")
-            
+
             # 调试：检查接收到的数据
             if event in [350, 351, 352]:  # TTS 相关事件
                 event_name = {
@@ -901,29 +899,29 @@ class TranslationServer:
                 }.get(event, f"Unknown({event})")
                 logger.info(f"📤 转发翻译数据到前端: {event_name}, text='{text}' (类型: {type(text).__name__}, 长度: {len(text) if text else 0})")
                 logger.debug(f"完整 data 对象: {data}")
-            
+
             # 转发给控制端
             message_to_send = {
                 "type": "translation",
                 "data": data
             }
-            
+
             # 调试：检查要发送的消息
             if event in [650, 651, 652, 653, 654, 655]:
                 logger.debug(f"要发送的消息中 text 值: '{message_to_send['data'].get('text', 'MISSING')}'")
-            
+
             await self._send_to_client(message_to_send)
-            
+
             # 广播给所有查看端（仅订阅了 TTS 的查看端收到音频负载，默认不广播音频节省带宽）
             if self.session:
                 tts_targets = self.session.viewer_wants_tts if data.get("data") else None
                 await self.session.broadcast_to_viewers(message_to_send,
                                                         tts_client_ids=tts_targets)
-            
+
             logger.debug(f"已发送消息到客户端并广播给查看端: event={event}")
         except Exception as e:
             logger.error(f"转发火山引擎消息时出错: {e}", exc_info=True)
-    
+
     async def _handle_volcengine_error(self, error: Exception):
         """
         处理火山引擎错误
@@ -1070,7 +1068,7 @@ class TranslationServer:
                 if hasattr(self.client_websocket, 'open') and not self.client_websocket.open:
                     logger.warning("客户端 WebSocket 未打开，无法发送消息")
                     return
-                
+
                 # 发送消息
                 if hasattr(self.client_websocket, 'send_str'):
                     # send_str 是异步方法（WebSocketAdapter 中定义的）
@@ -1079,7 +1077,7 @@ class TranslationServer:
                     await self.client_websocket.send(json.dumps(message))
                 else:
                     logger.warning("客户端 WebSocket 对象不支持发送消息")
-                
+
                 logger.debug(f"✓ 消息已发送到客户端: {message.get('type', 'unknown')}")
             except Exception as e:
                 logger.error(f"发送消息给客户端失败: {e}", exc_info=True)
@@ -1093,7 +1091,7 @@ def _init_text_corrector():
         # 查找纠正词库文件
         config_dir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'config')
         correction_file = os.path.join(config_dir, 'corrections.json')
-        
+
         # 如果文件存在，加载它
         if os.path.exists(correction_file):
             get_corrector(correction_file=correction_file)
@@ -1116,19 +1114,19 @@ def load_config():
     """加载配置文件"""
     # 初始化文本纠正器
     _init_text_corrector()
-    
+
     # 加载主配置文件
     config_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
         "config",
         "config.json"
     )
-    
+
     if not os.path.exists(config_path):
         logger.error(f"配置文件不存在: {config_path}")
         logger.info("请复制 config/config.example.json 为 config/config.json 并填入配置")
         sys.exit(1)
-    
+
     with open(config_path, "r", encoding="utf-8") as f:
         return json.load(f)
 
@@ -1137,17 +1135,17 @@ async def main():
     """主函数"""
     # 加载配置和纠正词库
     config = load_config()
-    
+
     # 创建服务器
     server = TranslationServer(config)
-    
+
     # 获取服务器配置
     server_config = config["server"]
     host = server_config.get("host", "localhost")
     port = server_config.get("port", 8765)
-    
+
     logger.info(f"启动服务器: ws://{host}:{port}")
-    
+
     # 检查端口是否被占用
     import socket
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -1163,11 +1161,11 @@ async def main():
             sys.exit(1)
         else:
             raise
-    
+
     # 启动 WebSocket 服务器
     try:
         async with serve(server.handle_client, host, port):
-            logger.info(f"服务器运行中，等待客户端连接...")
+            logger.info("服务器运行中，等待客户端连接...")
             await asyncio.Future()  # 永久运行
     except OSError as e:
         if e.errno == 48:

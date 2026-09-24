@@ -2,18 +2,18 @@
 文本纠正模块 - 用于纠正语音识别错误
 支持用户自定义词库进行文本替换
 """
-import re
-import logging
 import json
+import logging
 import os
-from typing import List, Dict, Tuple
+import re
+from typing import Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
 
 class TextCorrector:
     """文本纠正器"""
-    
+
     def __init__(self, correction_dict: Dict[str, str] = None, correction_file: str = None):
         """
         初始化文本纠正器
@@ -23,20 +23,20 @@ class TextCorrector:
             correction_file: 纠正词库文件路径（JSON格式）
         """
         self.corrections = {}
-        
+
         # 从文件加载
         if correction_file and os.path.exists(correction_file):
             self.load_from_file(correction_file)
-        
+
         # 从字典加载
         if correction_dict:
             self.corrections.update(correction_dict)
-        
+
         # 构建正则表达式模式（按长度排序，长的优先匹配）
         self.patterns = self._build_patterns()
-        
+
         logger.info(f"文本纠正器已初始化，包含 {len(self.corrections)} 个纠正规则")
-    
+
     def load_from_file(self, file_path: str):
         """
         从JSON文件加载纠正词库
@@ -56,7 +56,7 @@ class TextCorrector:
             logger.error(f"解析纠正词库文件失败: {e}, 文件: {file_path}")
         except Exception as e:
             logger.error(f"加载纠正词库文件失败: {e}, 文件: {file_path}")
-    
+
     def add_correction(self, wrong_text: str, correct_text: str):
         """
         添加纠正规则
@@ -69,7 +69,7 @@ class TextCorrector:
         # 重新构建模式
         self.patterns = self._build_patterns()
         logger.debug(f"添加纠正规则: '{wrong_text}' -> '{correct_text}'")
-    
+
     def remove_correction(self, wrong_text: str):
         """
         移除纠正规则
@@ -82,7 +82,7 @@ class TextCorrector:
             # 重新构建模式
             self.patterns = self._build_patterns()
             logger.debug(f"移除纠正规则: '{wrong_text}'")
-    
+
     def _build_patterns(self) -> List[Tuple[re.Pattern, str]]:
         """
         构建正则表达式模式列表
@@ -92,11 +92,11 @@ class TextCorrector:
         """
         if not self.corrections:
             return []
-        
+
         patterns = []
         # 按长度降序排序（长的优先匹配，避免短词覆盖长词）
         sorted_items = sorted(self.corrections.items(), key=lambda x: len(x[0]), reverse=True)
-        
+
         for wrong_text, correct_text in sorted_items:
             try:
                 # 转义特殊字符
@@ -106,9 +106,9 @@ class TextCorrector:
                 patterns.append((pattern, correct_text))
             except re.error as e:
                 logger.error(f"构建正则表达式失败: {wrong_text} -> {correct_text}, 错误: {e}")
-        
+
         return patterns
-    
+
     def correct_text(self, text: str) -> str:
         """
         纠正文本中的错误
@@ -121,26 +121,26 @@ class TextCorrector:
         """
         if not text or not self.patterns:
             return text
-        
+
         corrected_text = text
         corrections_made = []
-        
+
         try:
             # 按顺序应用所有纠正规则
             for pattern, replacement in self.patterns:
                 if pattern.search(corrected_text):
                     corrected_text = pattern.sub(replacement, corrected_text)
                     corrections_made.append(f"'{pattern.pattern}' -> '{replacement}'")
-            
+
             # 如果进行了纠正，记录日志
             if corrections_made and corrected_text != text:
                 logger.debug(f"文本已纠正: {len(corrections_made)} 处, 原始: '{text[:50]}...', 纠正后: '{corrected_text[:50]}...'")
-            
+
             return corrected_text
         except Exception as e:
             logger.error(f"纠正文本时出错: {e}")
             return text
-    
+
     def save_to_file(self, file_path: str):
         """
         保存纠正词库到文件
