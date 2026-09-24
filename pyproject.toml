@@ -1,0 +1,19 @@
+[project]
+name = "simultaneous-translation"
+version = "0.1.0"
+description = "基于火山引擎同声传译 2.0 API 的实时语音翻译系统"
+requires-python = ">=3.10"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+extend-exclude = [".venv", "python_protogen", "frontend"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["backend"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

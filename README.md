@@ -110,7 +110,7 @@ cp config/config.example.json config/config.json
 如果要在 iPad/手机 上使用麦克风功能，需要 HTTPS：
 
 ```bash
-./generate_cert.sh
+./scripts/generate_cert.sh
 ```
 
 这会生成自签名 SSL 证书（保存在 `ssl/` 目录）。
@@ -313,7 +313,7 @@ sudo bash deploy/deploy-linux.sh
 
 **TTS 停流自愈**：长会话中若出现"字幕正常显示但没有语音"（火山引擎停止下发 TTS），服务端看门狗会自动重建会话恢复语音输出（默认字幕活跃但 3 分钟无 TTS 即触发，`tts.stall_reconnect_min` 可调，0 关闭）。重建期间字幕不受影响，控制端状态栏会显示"语音恢复中…"。
 
-**多房间并发**：单进程支持多场会议同时进行，互不干扰。每场会议一个房间（Room），控制端连接后收到 `room_info`（含本场专属查看端链接 `/viewer?room=XXXXXX`），观众仅能通过该链接进入对应场次；控制端断线 10 分钟内重连自动恢复本场（字幕历史与查看端不丢失），房间空闲 5 分钟后自动回收。管理后台"活跃房间"页可查看各场次（申请人/主题/在线状态/查看端数）。后续如需故障隔离或更大规模的多进程水平扩展，见 [`MULTI_WORKER_PLAN.md`](MULTI_WORKER_PLAN.md)（设计已定稿，按触发条件实施）。
+**多房间并发**：单进程支持多场会议同时进行，互不干扰。每场会议一个房间（Room），控制端连接后收到 `room_info`（含本场专属查看端链接 `/viewer?room=XXXXXX`），观众仅能通过该链接进入对应场次；控制端断线 10 分钟内重连自动恢复本场（字幕历史与查看端不丢失），房间空闲 5 分钟后自动回收。管理后台"活跃房间"页可查看各场次（申请人/主题/在线状态/查看端数）。后续如需故障隔离或更大规模的多进程水平扩展，见 [`MULTI_WORKER_PLAN.md`](docs/MULTI_WORKER_PLAN.md)（设计已定稿，按触发条件实施）。
 
 **流程**：用户提交申请 → 管理员在后台审批 → 系统自动生成访问码并通过邮件发送（SMTP 未配置时可在管理页复制手动发送）→ 用户输入访问码进入。
 
@@ -357,8 +357,8 @@ Simultaneous_Translation/
 ├── start_server.py             # 服务器启动脚本
 ├── start.sh                    # Linux/macOS 启动脚本
 ├── start.ps1                   # Windows PowerShell 启动脚本
-├── generate_cert.sh            # SSL 证书生成脚本
-├── kill_port.sh                # 端口清理脚本
+├── scripts/                    # 辅助脚本（证书生成、端口清理、连接测试）
+├── docs/                       # 设计与说明文档
 └── requirements.txt            # Python 依赖
 ```
 
@@ -571,7 +571,7 @@ Simultaneous_Translation/
 
 **解决方案**:
 
-1. 生成 SSL 证书：`./generate_cert.sh`
+1. 生成 SSL 证书：`./scripts/generate_cert.sh`
 2. 使用 HTTPS 启动服务器：`python start_server.py --https`
 3. 在移动设备上使用 HTTPS 地址访问：`https://<电脑IP>:15677`
 
@@ -613,7 +613,7 @@ lsof -i :15677  # Linux/macOS
 netstat -ano | findstr :15677  # Windows
 
 # 使用脚本关闭端口
-./kill_port.sh 15677  # Linux/macOS
+./scripts/kill_port.sh 15677  # Linux/macOS
 
 # 或修改配置文件中的端口
 # 编辑 config/config.json，修改 server.port
