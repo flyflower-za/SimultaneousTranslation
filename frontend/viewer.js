@@ -868,10 +868,9 @@ class ViewerApp {
     }
     
     escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
+            // 统一使用 shared.js 的转义实现
+            return Shared.esc(text);
+        }
     
     filterSensitiveWords(text) {
         /**

@@ -1891,11 +1891,9 @@ class TranslationApp {
     }
     
     escapeHtml(text) {
-        // 转义HTML特殊字符，防止XSS攻击
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
+            // 统一使用 shared.js 的转义实现
+            return Shared.esc(text);
+        }
     
     splitIntoSentences(text) {
         /**

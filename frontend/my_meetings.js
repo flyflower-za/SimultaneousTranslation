@@ -3,11 +3,7 @@ const detailEl = document.getElementById('detail');
 let selectedId = null;
 
 async function request(path) {
-    const response = await fetch(path, {cache: 'no-store'});
-    if (response.status === 401) { location.href = '/'; throw new Error('请先登录'); }
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.error || '加载失败');
-    return data;
+    return Shared.apiFetch(path, {cache: 'no-store'}, () => { location.href = '/'; }, '请先登录');
 }
 
 function element(tag, text, className) {
