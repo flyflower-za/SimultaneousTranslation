@@ -157,10 +157,11 @@ systemctl enable "$SERVICE_NAME" >/dev/null
 info "服务已安装并设为开机自启"
 
 # ---------- 每日备份 cron ----------
-install -d -o "$SERVICE_USER" -g "$SERVICE_USER" "$DEPLOY_DIR/data/backup"
+install -d -m 700 -o "$SERVICE_USER" -g "$SERVICE_USER" "$DEPLOY_DIR/data/backup"
+chmod 755 "$DEPLOY_DIR/deploy/backup-db.sh"
 cat > "/etc/cron.d/${SERVICE_NAME}-backup" <<EOF
 # 同声传译系统：每日 03:00 备份 SQLite（保留 30 天）
-0 3 * * * $SERVICE_USER sqlite3 $DEPLOY_DIR/data/access.db ".backup '$DEPLOY_DIR/data/backup/access-'||strftime('%Y-%m-%d','now')||'.db'" && find $DEPLOY_DIR/data/backup -name 'access-*.db' -mtime +30 -delete
+0 3 * * * $SERVICE_USER "$DEPLOY_DIR/deploy/backup-db.sh" "$DEPLOY_DIR/data/access.db" "$DEPLOY_DIR/data/backup"
 EOF
 chmod 644 "/etc/cron.d/${SERVICE_NAME}-backup"
 info "每日备份 cron 已安装（03:00，保留 30 天，存于 $DEPLOY_DIR/data/backup）"

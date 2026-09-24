@@ -21,6 +21,8 @@ import socket
 import ssl
 import time
 import secrets
+import math
+from urllib.parse import urlsplit
 import aiohttp
 from aiohttp import web
 from aiohttp.web_runner import AppRunner, TCPSite
@@ -39,6 +41,7 @@ from backend.auth import (CookieSigner, get_code_id_from_request, is_admin,
                           make_user_cookie, make_admin_cookie)
 from backend.mailer import Mailer
 from backend.minutes import MinutesService
+from backend.minutes_export import render_minutes_pdf
 
 logging.basicConfig(
     level=logging.INFO,
@@ -475,7 +478,9 @@ async def api_shared_minutes(request):
         return json_error(404, "分享链接无效或已撤销")
     result = meeting_public(row)
     if row["ended_at"] and row["published_at"]:
-        result["minutes_text"] = row["minutes_text"]
+        published = ctx.db.published_minutes(row["id"])
+        if published is not None:
+            result["minutes_text"] = published
     resp = web.json_response({"ok": True, "meeting": result})
     resp.headers["Cache-Control"] = "no-store"
     return resp
@@ -498,7 +503,20 @@ async def api_admin_meeting(request):
     if not row:
         return json_error(404, "会议不存在")
     return web.json_response({"ok": True, "meeting": row,
-                              "segments": ctx.db.meeting_segments(meeting_id)})
+                              "segments": ctx.db.meeting_segments(meeting_id),
+                              "versions": ctx.db.list_minutes_versions(meeting_id),
+                              "model_calls": ctx.db.minutes_model_calls(meeting_id),
+                              "model_totals": ctx.db.minutes_model_totals(meeting_id)})
+
+
+@require_admin
+async def api_admin_meeting_version(request):
+    ctx: AppContext = request.app['ctx']
+    version = ctx.db.get_minutes_version(int(request.match_info['id']),
+                                         int(request.match_info['version_id']))
+    if not version:
+        return json_error(404, "纪要版本不存在")
+    return web.json_response({"ok": True, "version": version})
 
 
 @require_admin
@@ -529,6 +547,17 @@ async def api_admin_meeting_action(request):
         if row["published_at"]:
             return json_error(409, "请先撤回发布再编辑")
         ctx.db.save_minutes(meeting_id, content.strip())
+    elif action == "restore":
+        if not row["ended_at"] or row["published_at"] or row["status"] == "generating":
+            return json_error(409, "请先结束会议并撤回发布")
+        try:
+            version_id = int(body.get("version_id"))
+        except (TypeError, ValueError):
+            return json_error(400, "版本 ID 无效")
+        version = ctx.db.get_minutes_version(meeting_id, version_id)
+        if not version:
+            return json_error(404, "纪要版本不存在")
+        ctx.db.save_minutes(meeting_id, version["content"], actor="admin", source="restore")
     elif action == "publish":
         if not row["ended_at"] or not row["minutes_text"] or row["status"] == "generating":
             return json_error(409, "纪要尚未就绪")
@@ -545,6 +574,104 @@ async def api_admin_meeting_action(request):
         return json_error(400, "未知操作")
     ctx.db.audit("admin", f"meeting_{action}", f"会议 #{meeting_id}")
     return web.json_response({"ok": True, "meeting": ctx.db.get_meeting(meeting_id)})
+
+
+def own_code_id(request):
+    ctx: AppContext = request.app['ctx']
+    code_id = get_code_id_from_request(ctx.signer, request)
+    row = ctx.db.get_code(code_id) if code_id else None
+    return code_id if row and row["status"] != "revoked" else None
+
+
+async def api_my_meetings(request):
+    code_id = own_code_id(request)
+    if code_id is None:
+        return json_error(401, "请先登录控制端")
+    rows = request.app['ctx'].db.list_meetings(code_id=code_id, limit=200)
+    return web.json_response({"ok": True, "meetings": [meeting_public(row) for row in rows]})
+
+
+async def api_my_meeting(request):
+    code_id = own_code_id(request)
+    if code_id is None:
+        return json_error(401, "请先登录控制端")
+    ctx: AppContext = request.app['ctx']
+    meeting_id = int(request.match_info['id'])
+    row = ctx.db.get_meeting(meeting_id)
+    if not row or row["code_id"] != code_id:
+        return json_error(404, "会议不存在")
+    return web.json_response({"ok": True, "meeting": row,
+                              "segments": ctx.db.meeting_segments(meeting_id),
+                              "versions": ctx.db.list_minutes_versions(meeting_id)})
+
+
+async def api_download_meeting(request):
+    ctx: AppContext = request.app['ctx']
+    meeting_id = int(request.match_info['id'])
+    row = ctx.db.get_meeting(meeting_id)
+    admin = is_admin(ctx.signer, request)
+    if not row or (not admin and own_code_id(request) != row["code_id"]):
+        return json_error(404, "会议不存在")
+    if not row["minutes_text"]:
+        return json_error(409, "纪要尚未生成")
+    fmt = request.query.get("format", "md")
+    if fmt == "pdf":
+        body = render_minutes_pdf(row["title"] or f"会议 {meeting_id}", row["minutes_text"])
+        content_type, suffix = "application/pdf", "pdf"
+    elif fmt == "md":
+        body = row["minutes_text"].encode("utf-8")
+        content_type, suffix = "text/markdown", "md"
+    else:
+        return json_error(400, "只支持 md 或 pdf")
+    return web.Response(body=body, content_type=content_type,
+                        headers={"Content-Disposition": f'attachment; filename="meeting-{meeting_id}.{suffix}"',
+                                 "Cache-Control": "no-store"})
+
+
+@require_admin
+async def api_admin_minutes_settings(request):
+    ctx: AppContext = request.app['ctx']
+    if request.method == "GET":
+        return web.json_response({"ok": True, "settings": ctx.minutes.public_settings()})
+    try:
+        body = await request.json()
+        if not isinstance(body, dict):
+            raise ValueError("请求体必须是对象")
+        base_url = str(body.get("base_url", "")).strip().rstrip("/")
+        parsed = urlsplit(base_url)
+        if base_url and (parsed.scheme not in ("http", "https") or not parsed.netloc
+                         or parsed.username or parsed.password):
+            raise ValueError("模型地址须为有效 HTTP/HTTPS URL")
+        settings = dict(ctx.minutes.config)
+        settings["base_url"] = base_url
+        settings["model"] = str(body.get("model", "")).strip()[:150]
+        settings["output_language"] = str(body.get("output_language", "中文")).strip()[:30]
+        if body.get("clear_api_key"):
+            settings["api_key"] = ""
+        elif body.get("api_key"):
+            settings["api_key"] = str(body["api_key"]).strip()
+        for key, lo, hi in (("timeout_sec", 5, 600), ("chunk_chars", 2000, 30000),
+                            ("max_tokens", 256, 8192), ("max_attempts", 1, 10),
+                            ("retry_delay_sec", 1, 3600)):
+            value = int(body.get(key, settings.get(key, lo)))
+            if not lo <= value <= hi:
+                raise ValueError(f"{key} 必须在 {lo} 到 {hi} 之间")
+            settings[key] = value
+        for key in ("input_per_million", "output_per_million"):
+            value = float(body.get(key, settings.get(key, 0)))
+            if not math.isfinite(value) or value < 0:
+                raise ValueError(f"{key} 必须是非负数字")
+            settings[key] = value
+        settings["currency"] = str(body.get("currency", settings.get("currency", "CNY"))).strip()[:12]
+    except (TypeError, ValueError) as exc:
+        return json_error(400, str(exc))
+    ctx.db.save_minutes_settings(settings)
+    ctx.minutes.reload_settings()
+    if ctx.minutes.configured:
+        for meeting_id in ctx.db.minutes_needing_config():
+            ctx.minutes.schedule(meeting_id)
+    ctx.db.audit("admin", "minutes_model_settings_updated", f"模型 {settings['model']}")
+    return web.json_response({"ok": True, "settings": ctx.minutes.public_settings()})
 
 
 # ---------- WebSocket ----------
@@ -745,8 +872,7 @@ async def start_server(port=15677, use_https=False):
     ctx = AppContext(config, use_https)
     app['ctx'] = ctx
     ctx.db.end_orphan_meetings()
-    for meeting_id in ctx.db.pending_minutes():
-        ctx.minutes.schedule(meeting_id)
+    ctx.minutes.start()
 
     server_config = (config or {}).get("server", {}) if isinstance(config, dict) else {}
     advertise_ip = server_config.get("advertise_ip")
@@ -777,6 +903,13 @@ async def start_server(port=15677, use_https=False):
         return web.FileResponse(index_path)
 
     app.router.add_get('/app', app_handler)
+
+    async def my_meetings_handler(request):
+        if own_code_id(request) is None:
+            raise web.HTTPFound('/')
+        return web.FileResponse(os.path.join(frontend_dir, 'my_meetings.html'))
+
+    app.router.add_get('/my-meetings', my_meetings_handler)
 
     # 受保护页面：查看端
     async def viewer_handler(request):
@@ -818,6 +951,13 @@ async def start_server(port=15677, use_https=False):
     app.router.add_get('/api/admin/meetings', api_admin_meetings)
     app.router.add_get('/api/admin/meetings/{id:\\d+}', api_admin_meeting)
     app.router.add_post('/api/admin/meetings/{id:\\d+}', api_admin_meeting_action)
+    app.router.add_get('/api/admin/meetings/{id:\\d+}/versions/{version_id:\\d+}', api_admin_meeting_version)
+    app.router.add_get('/api/admin/meetings/{id:\\d+}/download', api_download_meeting)
+    app.router.add_get('/api/admin/minutes-settings', api_admin_minutes_settings)
+    app.router.add_post('/api/admin/minutes-settings', api_admin_minutes_settings)
+    app.router.add_get('/api/my/meetings', api_my_meetings)
+    app.router.add_get('/api/my/meetings/{id:\\d+}', api_my_meeting)
+    app.router.add_get('/api/my/meetings/{id:\\d+}/download', api_download_meeting)
     app.router.add_get('/api/share/{token}', api_shared_minutes)
     app.router.add_get('/api/health', api_health)
     app.router.add_get('/api/me', api_me)

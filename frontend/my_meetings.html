@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>我的会议 · 同声传译</title>
+  <style>
+    :root { font-family: system-ui, -apple-system, sans-serif; color:#182138; background:#f3f5fa; }
+    body { margin:0; }
+    header { background:#17233c; color:white; padding:24px max(20px,calc((100vw - 1100px)/2)); }
+    header a { color:#b9d6ff; }
+    main { max-width:1100px; margin:28px auto; padding:0 20px; display:grid; grid-template-columns:minmax(220px,320px) 1fr; gap:20px; }
+    section { background:#fff; border-radius:14px; padding:20px; box-shadow:0 8px 24px #14213d12; }
+    button, a.download { border:0; border-radius:8px; background:#315dcd; color:#fff; padding:9px 12px; cursor:pointer; font:inherit; text-decoration:none; display:inline-block; }
+    .meeting { display:block; width:100%; text-align:left; background:#edf2ff; color:#1d315d; margin:8px 0; }
+    .meeting.active { background:#315dcd; color:#fff; }
+    .muted { color:#66748c; font-size:13px; }
+    .toolbar { display:flex; gap:8px; flex-wrap:wrap; margin:14px 0; }
+    pre { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.65; font:14px/1.65 system-ui,sans-serif; background:#f7f9fd; border-radius:8px; padding:16px; max-height:440px; overflow:auto; }
+    @media(max-width:700px){main{display:block} section{margin-bottom:18px}}
+  </style>
+</head>
+<body>
+  <header><h1>我的会议</h1><a href="/app">返回控制端</a></header>
+  <main>
+    <section><h2>会议记录</h2><p class="muted">仅显示当前访问码名下的会议。</p><div id="list">加载中…</div></section>
+    <section id="detail"><h2>选择一场会议</h2><p class="muted">可查看纪要、原文和译文。</p></section>
+  </main>
+  <script src="my_meetings.js?v=20260924"></script>
+</body>
+</html>

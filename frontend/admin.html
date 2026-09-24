@@ -125,6 +125,7 @@
             border-radius: 11px; padding: 4px; margin-bottom: 22px;
             border: 1px solid var(--line);
         }
+        .board > .tabs { flex-wrap: wrap; }
         .tab {
             display: inline-flex; align-items: center; gap: 6px;
             padding: 8px 18px; border-radius: 8px; cursor: pointer;
@@ -502,6 +503,7 @@
             <div class="tab" data-tab="audit" onclick="switchTab('audit')"><span class="dot"></span>审计日志</div>
             <div class="tab" data-tab="rooms" onclick="switchTab('rooms')"><span class="dot"></span>活跃房间</div>
             <div class="tab" data-tab="meetings" onclick="switchTab('meetings')"><span class="dot"></span>会议纪要</div>
+            <div class="tab" data-tab="minutes-model" onclick="switchTab('minutes-model')"><span class="dot"></span>纪要模型</div>
         </div>
 
         <!-- 申请 -->
@@ -631,12 +633,41 @@
                     <button class="btn sm danger" onclick="meetingAction('revoke_share')">撤销分享</button>
                     <button class="btn sm ghost" onclick="copyMeetingLink()">复制查看链接</button>
                     <button class="btn sm ghost" onclick="downloadMeetingMinutes()">下载 Markdown</button>
+                    <button class="btn sm ghost" onclick="downloadMeetingPdf()">下载 PDF</button>
                     <button class="btn sm danger" onclick="meetingAction('delete')">删除会议记录</button>
                 </div>
+                <p class="hint" id="meetingGenerationInfo"></p>
                 <textarea id="meetingMinutes" aria-label="纪要草稿" style="box-sizing:border-box;width:100%;min-height:340px;padding:16px;font:14px/1.6 monospace;"></textarea>
+                <div class="section-title" style="margin-top:24px;">修订与发布版本</div>
+                <div class="toolbar"><select id="meetingVersionSelect" onchange="previewMeetingVersion()"></select>
+                    <button class="btn sm ghost" onclick="meetingAction('restore')">将此版本恢复为新草稿</button></div>
+                <pre id="meetingVersionPreview" style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:300px;overflow:auto;"></pre>
+                <div class="section-title" style="margin-top:24px;">模型用量与成本</div>
+                <div id="meetingModelUsage" class="hint" style="white-space:pre-wrap;"></div>
                 <div class="section-title" style="margin-top:24px;">字幕原文与译文</div>
                 <pre id="meetingTranscript" style="white-space:pre-wrap;overflow-wrap:anywhere;max-height:480px;overflow:auto;"></pre>
             </div>
+        </div>
+        <div class="panel hidden" id="panel-minutes-model">
+            <div class="section-title">纪要模型配置</div>
+            <p class="hint">配置保存在服务器本地数据库；API Key 不会回传到页面。环境变量 MINUTES_API_KEY 优先。</p>
+            <p id="minutesModelStatus" class="hint"></p>
+            <form id="minutesModelForm" onsubmit="saveMinutesModelSettings(event)" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;">
+                <label>接口地址 <input name="base_url" type="url" placeholder="https://example.com/v1" style="width:100%;box-sizing:border-box"></label>
+                <label>模型名称 <input name="model" type="text" style="width:100%;box-sizing:border-box"></label>
+                <label>输出语言 <input name="output_language" type="text" value="中文" style="width:100%;box-sizing:border-box"></label>
+                <label>API Key（留空则保留） <input name="api_key" type="password" autocomplete="new-password" style="width:100%;box-sizing:border-box"></label>
+                <label>调用超时（秒） <input name="timeout_sec" type="number" min="5" max="600" value="120"></label>
+                <label>每段最大字符 <input name="chunk_chars" type="number" min="2000" max="30000" value="12000"></label>
+                <label>最大输出 Token <input name="max_tokens" type="number" min="256" max="8192" value="2500"></label>
+                <label>最大尝试次数 <input name="max_attempts" type="number" min="1" max="10" value="3"></label>
+                <label>首次重试间隔（秒） <input name="retry_delay_sec" type="number" min="1" max="3600" value="30"></label>
+                <label>输入价格／百万 Token <input name="input_per_million" type="number" min="0" step="0.0001" value="0"></label>
+                <label>输出价格／百万 Token <input name="output_per_million" type="number" min="0" step="0.0001" value="0"></label>
+                <label>计价币种 <input name="currency" type="text" value="CNY"></label>
+                <label><input name="clear_api_key" type="checkbox"> 清除已保存的 API Key</label>
+                <div><button class="btn ok" type="submit">保存模型配置</button></div>
+            </form>
         </div>
     </div>
     </div>
@@ -796,6 +827,7 @@ async function refreshAll() {
     else if (TAB === 'audit') await loadAudit();
     else if (TAB === 'rooms') await loadRooms();
     else if (TAB === 'meetings') await loadMeetings();
+    else if (TAB === 'minutes-model') await loadMinutesModelSettings();
 }
 
 let selectedMeeting = null;
@@ -832,9 +864,39 @@ async function openMeeting(id) {
         selectedMeeting = data.meeting;
         document.getElementById('meetingDetail').classList.remove('hidden');
         document.getElementById('meetingTitle').textContent = `${selectedMeeting.title || '会议'} · #${id} · ${selectedMeeting.status}`;
+        document.getElementById('meetingGenerationInfo').textContent = [
+            selectedMeeting.error || '',
+            selectedMeeting.retry_count ? `已尝试 ${selectedMeeting.retry_count} 次` : '',
+            selectedMeeting.next_retry_at ? `下次重试：${fmtDT(selectedMeeting.next_retry_at)}` : ''
+        ].filter(Boolean).join(' · ');
         document.getElementById('meetingMinutes').value = selectedMeeting.minutes_text || '';
+        const versions = document.getElementById('meetingVersionSelect');
+        versions.replaceChildren();
+        for (const version of data.versions || []) {
+            const option = document.createElement('option');
+            option.value = version.id;
+            option.textContent = `v${version.version_no} · ${version.source} · ${fmtDT(version.created_at)}${version.published_at ? ' · 曾发布' : ''}`;
+            versions.appendChild(option);
+        }
+        if (versions.value) await previewMeetingVersion();
+        else document.getElementById('meetingVersionPreview').textContent = '暂无历史版本';
+        const totals = data.model_totals || {};
+        const calls = (data.model_calls || []).map(c =>
+            `${fmtDT(c.created_at)} · 第 ${c.attempt_no} 次 · ${c.stage} · 输入 ${c.input_tokens ?? '未知'} / 输出 ${c.output_tokens ?? '未知'} Token · 成本 ${c.cost == null ? '未知' : `${c.cost.toFixed(4)} ${c.currency || 'CNY'}`}`);
+        const costSummary = (totals.costs || []).map(c => `${c.cost.toFixed(4)} ${c.currency}`).join(' + ') || '未知';
+        document.getElementById('meetingModelUsage').textContent =
+            `调用 ${totals.calls || 0} 次；输入 ${totals.input_tokens ?? '未知'} / 输出 ${totals.output_tokens ?? '未知'} Token；累计成本 ${costSummary}\n` + calls.join('\n');
         document.getElementById('meetingTranscript').textContent = data.segments.map(s =>
             `[${fmtDT(s.occurred_at)}] ${s.kind === 'source' ? '原文' : '译文'}：${s.text}`).join('\n');
+    } catch (e) { toast(e.message, false); }
+}
+async function previewMeetingVersion() {
+    if (!selectedMeeting) return;
+    const id = document.getElementById('meetingVersionSelect').value;
+    if (!id) return;
+    try {
+        const data = await api(`/api/admin/meetings/${selectedMeeting.id}/versions/${id}`);
+        document.getElementById('meetingVersionPreview').textContent = data.version.content;
     } catch (e) { toast(e.message, false); }
 }
 async function meetingAction(action) {
@@ -844,6 +906,7 @@ async function meetingAction(action) {
     try {
         const body = {action};
         if (action === 'save') body.minutes_text = document.getElementById('meetingMinutes').value;
+        if (action === 'restore') body.version_id = Number(document.getElementById('meetingVersionSelect').value);
         await post(`/api/admin/meetings/${selectedMeeting.id}`, body);
         toast(action === 'generate' ? '已开始生成，请稍后刷新' : '操作成功');
         if (action === 'delete') {
@@ -855,20 +918,49 @@ async function meetingAction(action) {
 }
 function downloadMeetingMinutes() {
     if (!selectedMeeting) return;
-    const text = document.getElementById('meetingMinutes').value;
-    const blob = new Blob([text], {type: 'text/markdown;charset=utf-8'});
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `meeting-${selectedMeeting.id}.md`;
-    link.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    location.href = `/api/admin/meetings/${selectedMeeting.id}/download?format=md`;
+}
+function downloadMeetingPdf() {
+    if (!selectedMeeting) return;
+    location.href = `/api/admin/meetings/${selectedMeeting.id}/download?format=pdf`;
 }
 async function copyMeetingLink() {
     if (!selectedMeeting || selectedMeeting.share_revoked_at) return toast('分享已撤销', false);
     const url = `${location.origin}/viewer?room=${encodeURIComponent(selectedMeeting.room_id)}&share=${encodeURIComponent(selectedMeeting.share_token)}`;
     try { await navigator.clipboard.writeText(url); toast('链接已复制'); }
     catch (e) { toast('复制失败', false); }
+}
+
+async function loadMinutesModelSettings() {
+    try {
+        const data = await api('/api/admin/minutes-settings');
+        const settings = data.settings;
+        const form = document.getElementById('minutesModelForm');
+        for (const name of ['base_url','model','output_language','timeout_sec','chunk_chars',
+                            'max_tokens','max_attempts','retry_delay_sec','input_per_million',
+                            'output_per_million','currency']) {
+            form.elements[name].value = settings[name] ?? form.elements[name].defaultValue;
+        }
+        form.elements.api_key.value = '';
+        form.elements.clear_api_key.checked = false;
+        document.getElementById('minutesModelStatus').textContent =
+            `API Key：${settings.api_key_set ? '已配置' : '未配置'}${settings.api_key_from_env ? '（由环境变量提供）' : ''}`;
+    } catch (e) { toast(e.message, false); }
+}
+async function saveMinutesModelSettings(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const body = {};
+    for (const name of ['base_url','model','output_language','timeout_sec','chunk_chars',
+                        'max_tokens','max_attempts','retry_delay_sec','input_per_million',
+                        'output_per_million','currency']) body[name] = form.elements[name].value;
+    if (form.elements.api_key.value) body.api_key = form.elements.api_key.value;
+    body.clear_api_key = form.elements.clear_api_key.checked;
+    try {
+        await post('/api/admin/minutes-settings', body);
+        toast('模型配置已保存');
+        await loadMinutesModelSettings();
+    } catch (e) { toast(e.message, false); }
 }
 
 // ---------- 活跃房间 ----------

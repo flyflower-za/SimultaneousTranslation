@@ -856,7 +856,9 @@ class TranslationServer:
                 elif event == 652:  # SourceSubtitleEnd
                     if text:
                         if self.access_db and self.session.meeting_id:
-                            self.access_db.add_meeting_segment(self.session.meeting_id, "source", text)
+                            self.access_db.add_meeting_segment(
+                                self.session.meeting_id, "source", text,
+                                data.get("start_time"), data.get("end_time"), data.get("sequence"))
                         self.session.completed_source_lines.append(text)
                         if len(self.session.completed_source_lines) > self.session.max_history_lines:
                             self.session.completed_source_lines.pop(0)
@@ -866,7 +868,9 @@ class TranslationServer:
                 elif event == 655:  # TranslationSubtitleEnd
                     if text:
                         if self.access_db and self.session.meeting_id:
-                            self.access_db.add_meeting_segment(self.session.meeting_id, "translation", text)
+                            self.access_db.add_meeting_segment(
+                                self.session.meeting_id, "translation", text,
+                                data.get("start_time"), data.get("end_time"), data.get("sequence"))
                         self.session.completed_target_lines.append(text)
                         if len(self.session.completed_target_lines) > self.session.max_history_lines:
                             self.session.completed_target_lines.pop(0)
